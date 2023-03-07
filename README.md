@@ -18,6 +18,7 @@ numpy, PySide2, xrdtools
 run the following commands :
 
   pure pip installation (global):
+  
     pip install xrdtools
     pip install numpy
     pip install PySide2
