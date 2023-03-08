@@ -3,9 +3,9 @@
 import os
 import sys
 
-#from PySide2.QtGui import Qpainter
+from PySide2.QtGui import QPainter
 from PySide2.QtCharts import QtCharts
-
+from PySide2.QtGui import QColor
 #math imports
 import numpy as np
 import xrdtools
@@ -74,8 +74,11 @@ class MainWindow(QMainWindow):
         self.ui.actionHorizontalLogarithmic.triggered.connect(lambda : self.scales(None,False))
         self.ui.actionVerticalLinear.triggered.connect(lambda : self.scales(True,None))
         self.ui.actionVerticalLogarithmic.triggered.connect(lambda : self.scales(False,None))
+        self.ui.actionMean.triggered.connect(lambda : self.polyreg(0))
+        self.ui.actionLinear_Regression.triggered.connect(lambda : self.polyreg(1))
 
         #operations menu actions
+        self.ui.actionM1.triggered.connect(lambda : self.kMoment(1,self.currentSheetId))
         self.ui.actionM2.triggered.connect(lambda : self.kMoment(2,self.currentSheetId))
         self.ui.actionM3.triggered.connect(lambda : self.kMoment(3,self.currentSheetId))
         self.ui.actionM4_q.triggered.connect(lambda : self.kMoment(4,self.currentSheetId))
@@ -173,8 +176,6 @@ class MainWindow(QMainWindow):
         self.ui.SD.setText('SD [mm] : '+str(values['SD']))
         self.ui.Theta.setText('Theta [°] : '+str(values['Theta']))
 
-        #turning the X and Y data into a Qseries for the chart
-        series = QtCharts.QScatterSeries() 
 
         #axis setup
         if horLin : #checking for horizontal linear scale
@@ -183,35 +184,25 @@ class MainWindow(QMainWindow):
             axisX = QtCharts.QLogValueAxis()
             axisX.setBase(10)
         axisX.setTitleText(units[0])
-        
+
         if vertLin : #checking for vertical linear scale
             axisY = QtCharts.QValueAxis()
         else :
             axisY = QtCharts.QLogValueAxis()
             axisY.setBase(10)
         axisY.setTitleText(units[1])
+        axisY.setRange(np.min(data[0]),np.max(data[0])) #blocking the vertical scale to avoid the other series going over
 
         # series creation from data
-        """
-        #special case for fourier sheet that use the frequency array as abscissa
-        if values['Type']=='fourierSheet' :
-            freqs = data[1]
-            arr = data[0]
-            for i in range(len(data[0])):
-                series.append(freqs[i],arr[i])
-            axisX.setRange(1,len(data[0]))
-        
-        else:
-        """
+        #turning the X and Y data into a Qseries for the chart
+        series = QtCharts.QScatterSeries() 
         for i in range(len(data[0])):
-            series.append(data[1][i],data[0][i])
-        axisX.setRange(data[1][0],data[1][-1])
-
+            series.append(data[-1][i],data[0][i])
         series.setMarkerSize(3)
 
         #chart setup
         chart = QtCharts.QChart()
-        chart.addSeries(series)
+
         chart.setTitle(title)
         chart.setAnimationOptions(QtCharts.QChart.SeriesAnimations)
 
@@ -219,11 +210,25 @@ class MainWindow(QMainWindow):
         chart.addAxis(axisY,Qt.AlignLeft)
         chart.legend().setVisible(False)
 
+        #adding the main series
+        chart.addSeries(series)
         series.attachAxis(axisX)
         series.attachAxis(axisY)
 
+        #adding possible line series on top:
+        for j in range(1,len(data)-1):
+            moreSeries = QtCharts.QLineSeries()
+            moreSeries.setName(f'moreSeries{j}')
+            for i in range(len(data[j])):
+                moreSeries.append(data[-1][i],data[j][i])
+            moreSeries.setColor(QColor("cyan"))
+            chart.addSeries(moreSeries)
+            moreSeries.attachAxis(axisX)
+            moreSeries.attachAxis(axisY)
+
         #widget setup
         self.ui.chart_view = QtCharts.QChartView(chart)
+        self.ui.chart_view.setRenderHint(QPainter.Antialiasing)
         self.ui.chart_view.chart().setTheme(QtCharts.QChart.ChartThemeDark)
         
         sizePolicy = QSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
@@ -375,7 +380,7 @@ class MainWindow(QMainWindow):
             left_ind,right_ind = self.subSeries(left_val,right_val,data)
             #reduce the dataset to the zoomed series
             data[0] = data[0][left_ind:right_ind]
-            data[1] = data[1][left_ind:right_ind]
+            data[-1] = data[-1][left_ind:right_ind]
 
         else:
             # Enable zooming
@@ -405,6 +410,31 @@ class MainWindow(QMainWindow):
                 break
         self.showView(self.currentSheetId)
 
+    """
+    regression of order k on current zoomed amount   
+    """
+    def polyreg(self,k):
+        data = self.lookForSheet(self.currentSheetId)[0]
+        chart = self.ui.chart_view.chart()
+        if chart == NotImplemented:
+            return
+        
+        #getting the borders of the zoom indices
+        plot_area = chart.plotArea()
+        
+        left_val = chart.mapToValue(plot_area.topLeft()).x()
+        right_val = chart.mapToValue(plot_area.bottomRight()).x()
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
+
+        #getting the regression coefficients
+        coefficients = np.polyfit(data[-1][left_ind:right_ind],data[0][left_ind:right_ind],deg = k)
+
+        data_series = np.zeros(len(data[-1]))
+        for i in range(k+1):
+            data_series+=coefficients[i]*np.power(data[-1],k-i) #coefficients are given in decreasing power order
+        data.insert(1,data_series)
+        self.showView(self.currentSheetId)
+
     ########################################################
     #methods for the "Operations" menu
     ########################################################
@@ -413,11 +443,14 @@ class MainWindow(QMainWindow):
     computes the k'th order restricted moment of a selected data series
     """
     def kMoment (self,k,id):
-        data,values,title = self.lookForSheet(id)[:3]
+        try : data,values,title = self.lookForSheet(id)[:3]
+        except TypeError:
+            self.displayError("Error : no chart corresponding to ID found")
+            return
         if values['Type'] != 'baseSheet':
             self.displayError('Only use Operation tools on base sheets (extracted from a .xrdml file)')
             return
-
+        
         intensities = data[0]
 
         #adjusting the type of the chart (here to prevent the same operation to be tried on a modified chart)
@@ -435,10 +468,10 @@ class MainWindow(QMainWindow):
         
         left_val = chart.mapToValue(plot_area.topLeft()).x()
         right_val = chart.mapToValue(plot_area.bottomRight()).x()
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
 
         #computing q for zoomed intensity:
-        q_set = np.array((2/values['Lambda'])*(np.sin(data[1]/2)-np.sin(values['Theta'])))
+        q_set = np.array((2/values['Lambda'])*(np.sin(data[-1]/2)-np.sin(values['Theta'])))
 
         #computing the full integral I(s)dq
         integ = np.trapz(intensities[left_ind:right_ind],q_set[left_ind:right_ind])
@@ -504,7 +537,10 @@ class MainWindow(QMainWindow):
     def fourier(self,id):
         #the setup is similar to the kmoments, the details + showing the displayerror and ending the function is  useful so its let as is
 
-        data,values,title = self.lookForSheet(id)[:3]
+        try :data,values,title = self.lookForSheet(id)[:3]
+        except TypeError:
+            self.displayError("Error : no chart corresponding to ID found")
+            return
         if values['Type'] != 'baseSheet':
             self.displayError('Only use Operation tools on base sheets (extracted from a .xrdml file)')
             return
@@ -524,7 +560,7 @@ class MainWindow(QMainWindow):
         left_val =chart.mapToValue(plot_area.topLeft()).x()
         right_val = chart.mapToValue(plot_area.bottomRight()).x()
 
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
 
         #setting up the array for the np.fft.fft
         tempArray = np.zeros(right_ind-left_ind)
@@ -536,7 +572,7 @@ class MainWindow(QMainWindow):
         fftArray = fftArray[1:int(len(tempArray)/2)]/fftArray[0] # Exclude sampling frequency & normalize
         fftFreq = fftFreq[1:len(tempArray)]
 
-        self.setupNewChart([fftArray,fftFreq,data[1][left_ind:right_ind]],new_values,'Fourier transform of '+title,
+        self.setupNewChart([fftArray,fftFreq],new_values,'Fourier transform of '+title,
             new_units,'Fourier '+str(id),False,True,True)
 
     """
