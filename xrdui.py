@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 ################################################################################
-## Form generated from reading UI file 'secondTry.ui'
+## Form generated from reading UI file 'xrdui.ui'
 ##
 ## Created by: Qt User Interface Compiler version 5.15.2
 ##
@@ -17,7 +17,7 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(977, 637)
+        MainWindow.resize(979, 667)
         self.actionOpen = QAction(MainWindow)
         self.actionOpen.setObjectName(u"actionOpen")
         self.actionOpen_Multiple = QAction(MainWindow)
@@ -116,7 +116,7 @@ class Ui_MainWindow(object):
         self.scrollArea.setWidgetResizable(True)
         self.scrollAreaWidgetContents_3 = QWidget()
         self.scrollAreaWidgetContents_3.setObjectName(u"scrollAreaWidgetContents_3")
-        self.scrollAreaWidgetContents_3.setGeometry(QRect(0, 0, 748, 58))
+        self.scrollAreaWidgetContents_3.setGeometry(QRect(0, 0, 750, 58))
         self.horizontalLayout_2 = QHBoxLayout(self.scrollAreaWidgetContents_3)
         self.horizontalLayout_2.setSpacing(5)
         self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
@@ -257,6 +257,12 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_3.addWidget(self.groupBoxKeyVal)
 
+        self.pushButtonUnitToggle = QPushButton(self.frameSideBar)
+        self.pushButtonUnitToggle.setObjectName(u"pushButtonUnitToggle")
+        self.pushButtonUnitToggle.setMinimumSize(QSize(0, 40))
+
+        self.verticalLayout_3.addWidget(self.pushButtonUnitToggle)
+
 
         self.horizontalLayout.addWidget(self.frameSideBar, 0, Qt.AlignRight|Qt.AlignTop)
 
@@ -265,7 +271,7 @@ class Ui_MainWindow(object):
         self.frameChart.raise_()
         self.menubar = QMenuBar(MainWindow)
         self.menubar.setObjectName(u"menubar")
-        self.menubar.setGeometry(QRect(0, 0, 977, 26))
+        self.menubar.setGeometry(QRect(0, 0, 979, 26))
         self.menuFile = QMenu(self.menubar)
         self.menuFile.setObjectName(u"menuFile")
         self.menuEdit = QMenu(self.menubar)
@@ -440,6 +446,7 @@ class Ui_MainWindow(object):
         self.Lambda.setText(QCoreApplication.translate("MainWindow", u"Lambda [A] :", None))
         self.SD.setText(QCoreApplication.translate("MainWindow", u"SD [mm] :", None))
         self.Theta.setText(QCoreApplication.translate("MainWindow", u"Theta [\u00b0] :", None))
+        self.pushButtonUnitToggle.setText(QCoreApplication.translate("MainWindow", u"Change theta to Q", None))
         self.menuFile.setTitle(QCoreApplication.translate("MainWindow", u"File", None))
         self.menuEdit.setTitle(QCoreApplication.translate("MainWindow", u"Edit", None))
         self.menuPreprocessing.setTitle(QCoreApplication.translate("MainWindow", u"Preprocessing", None))

@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>977</width>
-    <height>637</height>
+    <width>979</width>
+    <height>667</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -118,7 +118,7 @@
               <rect>
                <x>0</x>
                <y>0</y>
-               <width>748</width>
+               <width>750</width>
                <height>58</height>
               </rect>
              </property>
@@ -411,6 +411,19 @@
          </layout>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="pushButtonUnitToggle">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>Change theta to Q</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
     </item>
@@ -423,7 +436,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>977</width>
+     <width>979</width>
      <height>26</height>
     </rect>
    </property>
