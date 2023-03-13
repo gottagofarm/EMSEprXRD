@@ -8,21 +8,20 @@ very case-specific project that is based on .xrdml file parsing & analysis
 PACKAGE INSTALLATION
 ////
 
-the following packages are used : numpy (contained in xrdtools), PySide2, xrdtools
+the following packages are used : numpy (contained in xrdtools), PySide2, xmltodict
 
 PySide2 works great on python 3.9, might cause issues on more recent versions (at least PyQT5 didn't work on python 3.11)
 to update the python version in anaconda version : https://www.cse.unsw.edu.au/~en1811/resources/getting-started/install-anaconda.html
 
-
-xrdtools requires pip:
 
 run the following commands (my-env being the name of the environment you want to create):
     
     conda create -n my-env
     conda activate my-env
     conda install pip
-    pip install xrdtools
+    pip install xmltodict
     pip install PySide2
+    pip install numpy
 
 
 
