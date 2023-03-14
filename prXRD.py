@@ -1,9 +1,9 @@
 #this script takes the ui of xrdui and does stuff
 
-
+from datetime import date
 import sys
 
-from PySide2.QtGui import QPainter
+from PySide2 import QtPrintSupport
 from PySide2.QtCharts import QtCharts
 from PySide2.QtGui import QColor
 #math imports
@@ -18,9 +18,12 @@ os.environ['QT_MAC_WANTS_LAYER'] = '1'
 from xrdui import *
 
 #setting up the default path for the files to open
-path = 'c:/Users/ahtim/Documents/taf/projet_recherche/code'
-pathChanged = False #put this to true if you changed the path
+path = ''
 
+#setting up default path for files to be saved in
+savePath = ''
+
+momentPoints = 500 #setting up the number of points on moment graphs
 
 
 class MainWindow(QMainWindow):
@@ -38,6 +41,8 @@ class MainWindow(QMainWindow):
 
         self.linkActions()
 
+        #mac wont show menubar correctly
+        self.setMenuBar(self.ui.menubar)
         self.show
 
     """
@@ -45,18 +50,23 @@ class MainWindow(QMainWindow):
     """
     def attributeSetup(self):
         self.sheets = [] #saving the different datasets used to create charts and show views
-        self.states = [] #saving the states to undo and redo later
         self.buttons =[] #list of buttons corresponding to the diff views
         self.id = 0 #incrementing id of charts & views
         self.currentSheetId = 0 #keeping track of the view we're in
         self.copiedView = [] #clipboard of copied Sheet
-        self.initialZoom = NotImplemented #previous zoom before undoing (not used for now (too bad))
-        self.ui.chart_view = NotImplemented
-        self.momentPoints = 500 #setting up the number of points on moment graphs
 
-        self.noise_line = None #allowing for noise control
-        self.noise_offset = 0.0
-        self.ui.pushButtonVerticalReframe.setCheckable(True)
+        self.undoPile = [] #saving the actions to undo and redo later
+        self.redoPile = [] #saving undone actions to redo
+        self.initialZoom = NotImplemented #previous zoom before undoing (not used for now (too bad))
+
+        self.ui.chart_view = NotImplemented #storing the chartview to access chart & plotarea for computing limits
+        self.axisX = None #keeping axis stored to add noise control line (not the case for regression lines that adapt when scale changes)
+        self.axisY = None
+
+        self.noise_coords = [(0,0),(0,0)]
+        self.noise_series = None #allowing for noise control
+
+        self.ui.pushButtonVerticalReframe.setCheckable(True)  #setting different buttons to have toggle on mode
         self.ui.pushButtonVerticalReframe.setChecked(False)
         self.ui.pushButtonHorizontalReframe.setCheckable(True)
         self.ui.pushButtonHorizontalReframe.setChecked(False)
@@ -65,10 +75,20 @@ class MainWindow(QMainWindow):
     links all the different buttons and shortcuts to the corresponding functions
     """
     def linkActions(self):
-        #file meny actions
+        #file menu actions
         self.ui.actionOpen.triggered.connect(self.openfiles)
         self.ui.pushButtonPlus.clicked.connect(self.openfiles)
+
+        self.ui.actionSavePNG.triggered.connect(self.saveCurrentView)
+        self.ui.actionSaveAllPNG.triggered.connect(self.saveAllViews)
+        self.ui.actionSaveCurrentData.triggered.connect(self.saveCurrentSheet)
+        self.ui.actionSaveAllData.triggered.connect(self.saveAllSheets)
+
+        self.ui.actionPrintChart.triggered.connect(self.printCurrent)
         self.ui.actionExit.triggered.connect(app.quit)
+
+        self.ui.actionScroll_left.triggered.connect(lambda: self.scroll(right = False))
+        self.ui.actionScroll_Right.triggered.connect(lambda: self.scroll(right = True))
 
         #edit menu actions
         self.ui.actionDelete_Chart.triggered.connect(lambda : self.removeView(self.currentSheetId))
@@ -115,8 +135,6 @@ class MainWindow(QMainWindow):
     """
     def openfiles(self):
         #browsing for the file
-        if not pathChanged :
-            path = ''
         fname, filter = QFileDialog.getOpenFileName(None, 'Open file', path, 'xrdml files(*.xrdml)')
         
         fpath = ''
@@ -132,6 +150,82 @@ class MainWindow(QMainWindow):
         #setting up the chart view
         self.setupNewChart(data,values,title,units,None,True,False,True)
 
+    """
+    Saves current view as a png
+    """
+    def saveCurrentView(self,name = None):
+        if self.ui.chart_view == NotImplemented:
+            self.displayError('Need open chart to save as PNG')
+            return
+        pixmap = self.ui.chart_view.grab()
+        title = ''
+        for sheet in self.sheets:
+            if sheet[0] == self.currentSheetId:
+                title = sheet[3]
+                break
+        day = date.today()
+        if name != None:
+            finalName = savePath +str(name)
+        else:
+            finalName = savePath +str(day)+'_'+title+'.png'
+        pixmap.save(finalName,'PNG')
+
+    """
+    saves all sheets as pngs
+    """
+    def saveAllViews(self):
+        for sheet in self.sheets:
+            self.showView(sheet[0],False)
+            self.saveCurrentView()
+
+    """
+    saves current sheet data
+    """
+    def saveCurrentSheet (self):
+        if self.ui.chart_view == NotImplemented:
+            self.displayError('Need open chart to save Data')
+            return
+        dict = self.sheetToDict(self.currentSheetId)
+        day = date.today()
+        finalName = savePath +str(day)+'_'+dict['title']+'.xml'
+        finalDict = {f'{finalName}':dict} #adding dict layer for xmltodict single root
+        xml_data = xmltodict.unparse(finalDict)
+        with open(finalName,'w') as f:
+            f.write((xml_data))
+
+    """
+    saves all sheets in a single xml file
+    """
+    def saveAllSheets(self):
+        if not self.sheets:
+            return
+        dict ={f'{i}':self.sheetToDict(self.sheets[i][0]) for i in range(len(self.sheets))}
+        day = date.today()
+        finalName = savePath+str(day)+'_'+dict['1']['values']['baseFile'][-14:-6] +'xml'
+        finalDict = {f'{finalName}':dict}
+        xml_data = xmltodict.unparse(finalDict)
+        with open(finalName,'w') as f:
+            f.write((xml_data))
+
+    """
+    prints current view
+    """
+    def printCurrent(self):
+        printer = QtPrintSupport.QPrinter()
+        dialog = QtPrintSupport.QPrintDialog(printer, self)
+        if not dialog.exec_():
+            return  # User canceled
+
+        # Render the chart view widget to a QPainter
+        painter = QPainter()
+        painter.begin(printer)
+        chartView = self.ui.chart_view
+        chartView.render(painter)
+
+        # Finish up and cleanup
+        painter.end()
+
+
     ########################################################
     #useful methods
     ########################################################
@@ -141,7 +235,7 @@ class MainWindow(QMainWindow):
     """
     def parseXrdml(self,file):
         #dummy values 
-        values = {'Theta':0,'Lambda':0,'SD':0,'time':0}
+        values = {'Theta':0,'Lambda':0,'SD':0,'time':0,'linearRegressionCoeffs':{},'baseFile':file}
         parsedfile = xmltodict.parse(open(file).read(),xml_attribs = False)
         
         #associating the values with the chart       
@@ -150,7 +244,7 @@ class MainWindow(QMainWindow):
         values['Time']=float(parsedfile['xrdMeasurements']['xrdMeasurement']['scan']['dataPoints']['commonCountingTime'])
         values['Type']='baseSheet'
         intensities =parsedfile['xrdMeasurements']['xrdMeasurement']['scan']['dataPoints']['intensities'].split(' ')
-        intensities = np.array(list(map(int,intensities)))
+        intensities = np.array(list(map(float,intensities)))
         angles = np.linspace(float(parsedfile['xrdMeasurements']['xrdMeasurement']['scan']['dataPoints']['positions'][0]['startPosition']),float(parsedfile['xrdMeasurements']['xrdMeasurement']['scan']['dataPoints']['positions'][0]['endPosition']),len(intensities))/2
         #storing the intensity data (normalized according to time per step), and the angle data
         data = [intensities,angles]
@@ -181,7 +275,7 @@ class MainWindow(QMainWindow):
     """
     shows the view corresponding to set of data and values
     """
-    def showView(self,id):
+    def showView(self,id,animations = True):
         try : self.ui.verticalLayout_7.takeAt(0).widget().deleteLater() #deleting the current view if there is one
         except AttributeError:
             pass
@@ -237,14 +331,18 @@ class MainWindow(QMainWindow):
         #turning the X and Y data into a Qseries for the chart
         series = QtCharts.QScatterSeries() 
         for i in range(len(data[0])):
-            series.append(data[-1][i],data[0][i])
+            if not vertLin and data[0][i]<=0: #avoiding negative values in logarithmic scale
+                pass
+            else:
+                series.append(data[-1][i],data[0][i])
         series.setMarkerSize(3)
 
         #chart setup
         chart = QtCharts.QChart()
 
         chart.setTitle(title)
-        chart.setAnimationOptions(QtCharts.QChart.SeriesAnimations)
+        if animations:
+            chart.setAnimationOptions(QtCharts.QChart.SeriesAnimations)
 
         chart.addAxis(axisX,Qt.AlignBottom)
         chart.addAxis(axisY,Qt.AlignLeft)
@@ -255,12 +353,16 @@ class MainWindow(QMainWindow):
         series.attachAxis(axisX)
         series.attachAxis(axisY)
 
+        #storing the axis to allow for dynamic noise control series adding
+        self.axisX = axisX
+        self.axisY = axisY
+
         #adding possible line series on top:
         for j in range(1,len(data)-1):
             moreSeries = QtCharts.QLineSeries()
             moreSeries.setName(f'moreSeries{j}')
             for i in range(len(data[j])):
-                if vertLin and data[j][i]<=0:    #avoiding any negative value in the linear regressions
+                if not vertLin and data[j][i]<=0:    #avoiding any negative value in the linear regressions
                     pass
                 else :
                     moreSeries.append(data[-1][i],data[j][i])
@@ -279,8 +381,12 @@ class MainWindow(QMainWindow):
 
         self.ui.verticalLayout_7.addWidget(self.ui.chart_view)
         self.ui.chart_view.setRubberBand(QtCharts.QChartView.HorizontalRubberBand) #allowing for zoom by default
-
-        self.currentSheetId = id #updating the current view id
+        if self.currentSheetId!= id:
+            if self.undoPile:
+                self.undoPile = [] #removing memorized actions on previous views
+            if self.redoPile:
+                self.redoPile = []
+            self.currentSheetId = id #updating the current view id
 
     """
     looks for sheet according to id and returns data&values
@@ -330,9 +436,19 @@ class MainWindow(QMainWindow):
         error_dialog.exec_()
 
     """
+    transforms the sheet list into a dictionary for xmltodict.unparse
+    """
+    def sheetToDict(self,id):
+        data,values,title,units = self.lookForSheet(id)[:4]
+        dict = {'title' : title,'units':{'bottomUnit':units[0],'leftUnit':units[1]},'values':values,
+            'data':{'YaxisData':' '.join(str(data_point)for data_point in data[0]),
+                'XaxisData':' '.join(str(data_point) for data_point in data[-1])}}
+        return(dict)
+
+    """
     changes the unit from theta to q and viceversa if it is possible
     """
-    def toggleUnit(self):
+    def toggleUnit(self, undoing = False, redoing = False):
         try : data,values,title,units = self.lookForSheet(self.currentSheetId)[:4]
         except TypeError:
             self.displayError("Error : no chart corresponding to ID found")
@@ -349,32 +465,86 @@ class MainWindow(QMainWindow):
             if sheet[0] == self.currentSheetId:
                 sheet[1][-1] = data[-1]
                 sheet[4] = units
+                break
         self.showView(self.currentSheetId)
+        if not undoing: 
+            self.undoPile.append([self.toggleUnit,None]) #updating undo pile if not undoing
+            if not redoing: self.redoPile = [] #if new action, should clear redo pile 
+
+    """
+    allows to scroll through windows using left and right arrow keys
+    """
+    def scroll(self,right):
+        if self.ui.chart_view == NotImplemented:
+            return
+        if right: #slide one to the right
+            for sheet in self.sheets:
+                if sheet[0]>self.currentSheetId:
+                    self.showView(sheet[0])
+                    break
+        else: #slide one to the left (start counting ids from the left)
+            n = len(self.sheets)
+            for i in range(n):
+                if self.sheets[n-i-1][0]<self.currentSheetId:
+                    self.showView(self.sheets[n-i-1][0])
+                    break
 
     ########################################################
     #methods for the "edit" menu
     ########################################################
 
     """
-    resets the zoom
+    resets the zoom and undoes last memorized action
     """
     def undoAction(self):
-        #if self.ui.chart_view.chart() != NotImplemented :
-        #    chart = self.ui.chart_view.chart()
-        #    x_data = [point.x() for series in chart.series() for point in series.pointsVector()]
-        #    self.initialZoom =(x_data[0],x_data[-1])
         self.ui.chart_view.chart().zoomReset()
-        
+        if self.undoPile:
+            function,variables = self.undoPile.pop()
+        else:
+            return
+        if function == self.toggleUnit: #this needs to be part of the undoPile as it changes the behaviour of other actions
+            function(True,False)  #false to not append the undoPile while undoing
+            self.redoPile.append([function, variables])
+        elif function == self.update_plot_data: #to remove the noise correction, add an opposite noise correction
+            self.redoPile.append([function, variables])
+            function(-variables[0],-variables[1],True,False)
+        elif function == self.scales: #adjusting the variables to change the corresponding scale
+            self.redoPile.append([function, variables])
+            vertLin,horLin = None,None
+            if variables[0] != None:
+                vertLin = not variables[0]
+            if variables[1] != None:
+                horLin = not variables[1]
+            function(vertLin,horLin,True,False)
+        elif function == self.polyreg: #removing data of previously added linear regression
+            for sheet in self.sheets:
+                if sheet[0] == self.currentSheetId:
+                    dataset  = sheet[1].pop(1)
+                    self.redoPile.append([function, dataset])
+                    self.showView(self.currentSheetId)
+                    break
 
     """
-    rezooms in
+    redoes last memorized action
     """
     def redoAction(self):
-        self.displayError("Sorry this functionality hasn't been implemented yet (too bad)")
-        #if self.initialZoom != NotImplemented:
-        #    x_range = self.initialZoom
-        #    self.ui.chart_view.chart().zoomInX(x_range)
-        #    self.initialZoom = NotImplemented
+        if self.redoPile:
+            function,variables = self.redoPile.pop()
+        else:
+            return
+        if function == self.toggleUnit: #this needs to be part of the undoPile as it changes the behaviour of other actions
+            function(False, True)
+        elif function == self.update_plot_data: #to remove the noise correction, add an opposite noise correction
+            function(variables[0],variables[1],False,True)
+        elif function == self.scales: #adjusting the variables to change the corresponding scale
+            function(variables[0],variables[1],False,True)
+        elif function == self.polyreg:
+            for sheet in self.sheets:
+                if sheet[0] == self.currentSheetId:
+                    sheet[1].insert(1,variables)
+                    self.undoPile.append([self.polyreg,None]) #appending undoPile manually because the action function isnt called
+                    self.showView(self.currentSheetId)
+                    break
 
 
     """
@@ -424,7 +594,7 @@ class MainWindow(QMainWindow):
     ########################################################
 
     """
-    allows for a horizontal zoom in (toggles the ability to zoom) and locks the zoom on the chart (sussy business)
+    allows for a horizontal zoom in (toggles the ability to zoom) and locks the zoom on the chart (not undoable yet)
     """
     def horizontalReframe(self):
         if self.ui.pushButtonHorizontalReframe.isChecked():
@@ -443,8 +613,12 @@ class MainWindow(QMainWindow):
 
             left_ind,right_ind = self.subSeries(left_val,right_val,data)
             #reduce the dataset to the zoomed series
-            data[0] = data[0][left_ind:right_ind]
-            data[-1] = data[-1][left_ind:right_ind]
+            for sheet in self.sheets:
+                if sheet[0] ==self.currentSheetId:
+                    for dataset in range(len(sheet[1])):
+                        dataset = dataset[left_ind,right_ind]
+                    break
+
 
         else:
             # Enable zooming
@@ -452,57 +626,98 @@ class MainWindow(QMainWindow):
             self.ui.pushButtonHorizontalReframe.setText('Disable Zoom')
 
     """
-    toggles the visibility and effect of a noise control line
+    allows for a selection of a noise control line through 2 points on a graph
     """
     def noiseControl(self):
         if self.ui.pushButtonVerticalReframe.isChecked():
-            # add draggable line annotation
-            self.noise_line = QGraphicsLineItem()
-            #self.noise_line.setLineStyle(QtCharts.QChartLineAnnotation.LineStyle.DottedLine)
-            #self.noise_line.setAxes(self.chart_view.chart.axisX(), self.chart_view.chart.axisY())
-            self.noise_line.setFlag(QGraphicsItem.ItemIsMovable)
-            self.noise_line.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
-            self.noise_line.setLine(0, self.ui.chart_view.chart().plotArea().height() * 0.2,
-                self.ui.chart_view.chart().plotArea().width(), self.ui.chart_view.chart().plotArea().height() * 0.2)  # set initial position at 20% height
-            self.ui.chart_view.chart().scene().addItem(self.noise_line)
-
-            self.ui.pushButtonVerticalReframe.setText('Apply Filter')
-            # connect signals for updating line position and plot data
-            #self.chart_view.chart.plotAreaChanged.connect(self.update_noise_line_position)
-            #self.noise_line.itemChanged.connect(self.update_noise_offset)
+            # Enable selection of two points
+            self.ui.pushButtonVerticalReframe.setText('Apply Filter')            
+            self.ui.chart_view.setCursor(Qt.CrossCursor)
+            self.ui.chart_view.mousePressEvent = self.select_first_point
         else:
-            # remove draggable line annotation and disconnect signals
-            self.ui.chart_view.chart().scene().removeItem(self.noise_line)
-            #self.chart_view.chart.plotAreaChanged.disconnect(self.update_noise_line_position)
-            #self.noise_line.positionChanged.disconnect(self.update_noise_offset)
-            self.noise_line = None
-            self.update_plot_data()  # reset plot data   
-            self.showView(self.currentSheetId) #reset the chart after updating the data
+            # Remove the line series and reset the cursor
+            self.ui.chart_view.setCursor(Qt.ArrowCursor)
+            if self.noise_series == None:
+                self.displayError('Please enter at least two points on the graph.')
+                return
+            (x1, y1), (x2, y2) = self.noise_coords[0],self.noise_coords[1]
+            # calculate slope and intercept of linear function
+            slope = (y2 - y1) / (x2 - x1)
+            intercept = y1 - slope * x1
+            self.update_plot_data(slope,intercept)  # reset plot data   
+            self.noise_series = None
             self.ui.pushButtonVerticalReframe.setText('Noise Control')
 
-    def update_plot_data(self):
-        # update plot data by subtracting noise offset from each data point
-        x1, y1, x2, y2 = self.noise_line.line().getCoords()
-        
-        # calculate slope and intercept of linear function
-        slope = (y1 - y2) / (x1 - x2)
-        intercept = y1 - slope * x1
-        # update noise offset
-        self.noise_offset = (slope, intercept)
+    def select_first_point(self,event : QMouseEvent):
+        # Get the x and y coordinates of the first point
+        chart = self.ui.chart_view.chart()
+        x = chart.mapToValue(event.pos()).x()
+        y = chart.mapToValue(event.pos()).y()
+        self.noise_coords[0] = (x,y)
+        self.ui.chart_view.mousePressEvent = self.select_second_point
+
+    def select_second_point(self,event: QMouseEvent):
+        #getting second point coords
+        chart = self.ui.chart_view.chart()
+        x = chart.mapToValue(event.pos()).x()
+        y = chart.mapToValue(event.pos()).y()
+        self.noise_coords[1] = (x,y)
+        #adding a series to the chart for visual reference
+        if self.noise_series != None:
+            chart.removeSeries(self.noise_series) #removing series if not first line
+        self.noise_series = QtCharts.QLineSeries()
+        self.noise_series.append(self.noise_coords[0][0],self.noise_coords[0][1])
+        self.noise_series.append(self.noise_coords[1][0],self.noise_coords[1][1])
+        chart.addSeries(self.noise_series)
+        self.noise_series.attachAxis(self.axisX)
+        self.noise_series.attachAxis(self.axisY)
+        self.ui.chart_view.mousePressEvent = self.select_third_point
+
+    def select_third_point (self,event : QMouseEvent):
+        #in case of failed first attempt, we can retry
+        chart = self.ui.chart_view.chart()
+        x = chart.mapToValue(event.pos()).x()
+        y = chart.mapToValue(event.pos()).y()
+        self.noise_coords[0] = (x,y)
+        #adding a series to the chart for visual reference
+        chart.removeSeries(self.noise_series) #removing previous series
+        self.noise_series = QtCharts.QLineSeries()
+        self.noise_series.append(self.noise_coords[0][0],self.noise_coords[0][1])
+        self.noise_series.append(self.noise_coords[1][0],self.noise_coords[1][1])
+
+        chart.addSeries(self.noise_series)
+        self.noise_series.attachAxis(self.axisX)
+        self.noise_series.attachAxis(self.axisY)
+        #giving the hand back to the 2nd point choice
+        self.ui.chart_view.mousePressEvent = self.select_second_point
+
+    """
+    updates plot data according to slope and intercept defining noise line (substracts it)
+    """
+    def update_plot_data(self,slope,intercept, undoing = False, redoing = False):
         # subtract linear function from data
         for sheet in self.sheets:
             if sheet[0]==self.currentSheetId:
-                for i in range(len(sheet[1])-1):
-                    for y_value in sheet[1][i]:
-                        y_value = y_value - (intercept +slope*sheet[1][-1][i])
+                for i in range(len(sheet[1][0])):
+                    sheet[1][0][i] -= (intercept +slope*sheet[1][-1][i])
                 break
-        # reset noise offset
-        self.noise_offset = None
+        if not undoing: 
+            self.undoPile.append([self.update_plot_data,[slope,intercept]])
+            if not redoing: self.redoPile = []
+        self.showView(self.currentSheetId) #reset the chart after updating the data
+
+
 
     """
     reloads the view with the changed scales
     """
-    def scales(self,vertLin,horLin):
+    def scales(self,vertLin,horLin,undoing = False, redoing = False):
+        #checking for changes to avoid wrongful memorization of actions & view reloading
+        curVertlin,curHorlin = self.lookForSheet(self.currentSheetId)[4:6]
+        if curVertlin == vertLin:
+            vertLin = None
+        if curHorlin == horLin:
+            horLin = None
         if self.sheets ==[]:
             return                
         for sheet in self.sheets: #looking for the sheet (lookforsheet doesn't allow to change booleans)
@@ -520,7 +735,12 @@ class MainWindow(QMainWindow):
                     elif horLin and sheet[4][0][:4] =='log ':
                         sheet[4][0] = sheet[4][0][4:]    
                 break
-        self.showView(self.currentSheetId)
+        if horLin != None or vertLin != None: #avoiding meaningless updates
+            self.showView(self.currentSheetId)
+            if not undoing : 
+                self.undoPile.append([self.scales,[vertLin,horLin]])
+                if not redoing: self.redoPile = []
+
 
     """
     adapts the scale for horizontal combo box
@@ -537,8 +757,8 @@ class MainWindow(QMainWindow):
     """
     regression of order k on current zoomed amount   
     """
-    def polyreg(self,k):
-        data,_,_,_,vertLin,horLin = self.lookForSheet(self.currentSheetId)
+    def polyreg(self,k,undoing = False, redoing = False):
+        data,values,_,_,vertLin,horLin = self.lookForSheet(self.currentSheetId)[:6]
         chart = self.ui.chart_view.chart()
         if chart == NotImplemented:
             return
@@ -562,7 +782,7 @@ class MainWindow(QMainWindow):
                 coefficients = np.polyfit(np.log(data[-1][left_ind:right_ind]),data[0][left_ind:right_ind],deg = k)
                 for i in range(k+1):
                     data_series+=coefficients[i]*np.power(np.log(data[-1]),k-i)
-        else : #vertical logarithmic, for now same as above, 
+        else : #vertical logarithmic
             if horLin: #horizontal linear
                 coefficients = np.polyfit(data[-1][left_ind:right_ind],(np.log10(data[0][left_ind:right_ind])),deg = k)
                 for i in range(k+1):
@@ -571,8 +791,15 @@ class MainWindow(QMainWindow):
                 coefficients = np.polyfit(np.log(data[-1][left_ind:right_ind]),(np.log10(data[0][left_ind:right_ind])),deg = k)
                 for i in range(k+1):
                     data_series+=(coefficients[i]*np.power(np.log(data[-1]),k-i))
+            data_series = np.power(data_series, 10) #adjusting for vertical log scale
+
+        #saving the last linear regression coefficients for data
+        values['linearRegressionCoeffs']={f'Order{i}Coeff':coefficients[k-i] for i in range(k+1)}
         data.insert(1,data_series)
         self.showView(self.currentSheetId)
+        if not undoing :
+            self.undoPile.append([self.polyreg,None])
+            if not redoing: self.redoPile = []
 
     ########################################################
     #methods for the "Operations" menu
@@ -620,7 +847,7 @@ class MainWindow(QMainWindow):
         integ = np.trapz(intensities[left_ind:right_ind],q_set[left_ind:right_ind])
 
         #creating a linearly spread out q dataset 
-        q_spread = np.linspace(0,np.max(q_set[left_ind:right_ind]),self.momentPoints)
+        q_spread = np.linspace(0,np.max(q_set[left_ind:right_ind]),momentPoints)
         q_spread = q_spread[1:] #avoiding the zero to not cause logarithm scale issues
         data_series = [] #dataset to append that will contain the moment integral on given q in q_spread
         
