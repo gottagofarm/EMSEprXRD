@@ -24,7 +24,12 @@ path = ''
 savePath = ''
 
 momentPoints = 500 #setting up the number of points on moment graphs
-
+#having a list of colors for series
+colors = [Qt.red,Qt.green,Qt.blue,Qt.yellow,Qt.cyan,Qt.magenta,Qt.darkRed,Qt.darkGreen,Qt.darkBlue,
+                Qt.darkCyan,Qt.darkMagenta,Qt.darkYellow,Qt.gray,Qt.darkGray,Qt.lightGray,]
+#########################################
+#### MainWindow class to be executed
+#########################################
 
 class MainWindow(QMainWindow):
     """
@@ -34,7 +39,7 @@ class MainWindow(QMainWindow):
         QMainWindow.__init__(self)
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-
+        self.setWindowTitle('X-ray diffraction analysis tool')
         self.attributeSetup()
 
         self.setMinimumSize(800,600)
@@ -71,6 +76,10 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonHorizontalReframe.setCheckable(True)
         self.ui.pushButtonHorizontalReframe.setChecked(False)
 
+        self.status_bar = QStatusBar(self) #having a status bar to display the chart coords
+        self.setStatusBar(self.status_bar)
+        self.timer = NotImplemented
+
     """
     links all the different buttons and shortcuts to the corresponding functions
     """
@@ -78,6 +87,7 @@ class MainWindow(QMainWindow):
         #file menu actions
         self.ui.actionOpen.triggered.connect(self.openfiles)
         self.ui.pushButtonPlus.clicked.connect(self.openfiles)
+        self.ui.actionCombineCharts.triggered.connect(self.combineCharts)
 
         self.ui.actionSavePNG.triggered.connect(self.saveCurrentView)
         self.ui.actionSaveAllPNG.triggered.connect(self.saveAllViews)
@@ -151,12 +161,46 @@ class MainWindow(QMainWindow):
         self.setupNewChart(data,values,title,units,None,True,False,True)
 
     """
+    combines multiple sheets into same chart
+    """
+    def combineCharts(self):
+        #creating the dialog to allow for selection of charts
+        self.selection_dialog = SelectionDialog(self.buttons)
+        self.selection_dialog.setWindowTitle("Select charts to combine")
+        result = self.selection_dialog.exec_() #executing dialog
+        if result == QDialog.Accepted:
+            #creating the new chart data and values
+            selected_items = self.selection_dialog.selected_items
+            data = []
+            values = {'Lambda':'','Theta':'','SD':'','linRegEquations':[],'Type':'combinedChart','numberOfCharts':0}
+            units = ['','']
+            buttonName = 'Combined '
+            title = ''
+            for i in range (len(self.sheets)):
+                if self.buttons[i] in selected_items:
+                    data.append(self.sheets[i][1][0])
+                    data.append(self.sheets[i][1][1])
+                    values['numberOfCharts']+=1
+                    if units ==['','']:
+                        units[0] = self.sheets[i][4][0]
+                        #the default value is linear, so the unit will be put to linear if it has log in front
+                        if units[0][:4] == 'log ':
+                            units[0] = units[0][4:]
+                        units[1] = 'Normalized units'
+                    buttonName+=f'{i},'
+                    title += f'{self.sheets[i][3]},'
+            if data!=[]:
+                title = title[0:-1]
+                self.setupNewChart(data,values,title,units,buttonName,True,True,True)
+
+    """
     Saves current view as a png
     """
     def saveCurrentView(self,name = None):
         if self.ui.chart_view == NotImplemented:
             self.displayError('Need open chart to save as PNG')
             return
+
         pixmap = self.ui.chart_view.grab()
         title = ''
         for sheet in self.sheets:
@@ -235,7 +279,7 @@ class MainWindow(QMainWindow):
     """
     def parseXrdml(self,file):
         #dummy values 
-        values = {'Theta':0,'Lambda':0,'SD':0,'time':0,'linearRegressionCoeffs':{},'baseFile':file}
+        values = {'Theta':0,'Lambda':0,'SD':0,'time':0,'linRegEquations':[],'baseFile':file}
         parsedfile = xmltodict.parse(open(file).read(),xml_attribs = False)
         
         #associating the values with the chart       
@@ -258,17 +302,18 @@ class MainWindow(QMainWindow):
     """
     def setupNewChart(self,data,values = "None",title = "Title",units=["Angle (°)","Intensity"],
             buttonName = None,show = True,vertLin = True,horLin =True):
-            
+        id = self.id
         #creating new chart in list
-        self.sheets.append([self.id,data,values,title,units,vertLin,horLin])
+        self.sheets.append([id,data,values,title,units,vertLin,horLin])
+        #setting up the button to change the chart viewed
+        if buttonName is None:
+            self.setupSheetButton(f"Sheet {id}",id,Checked= show)
+        else : 
+            self.setupSheetButton(buttonName,id ,Checked= show)
+
         #setting up the chart and showing it
         if show:
-            self.showView(self.id)
-        #setting up the button to change the chart viewed
-        if buttonName == None:
-            self.setupSheetButton("Sheet "+str(self.id),self.id)
-        else : 
-            self.setupSheetButton(buttonName,self.id)
+            self.showView(id)        
 
         self.id+=1 #incrementing chart id
 
@@ -325,16 +370,21 @@ class MainWindow(QMainWindow):
             self.ui.comboBoxVerticalScale.setCurrentIndex(1)
             self.ui.comboBoxVerticalScale.currentIndexChanged.connect(self.comboBoxScale)
         axisY.setTitleText(units[1])
-        axisY.setRange(np.min(data[0]),np.max(data[0])) #blocking the vertical scale to avoid the other series going over
+        if values['Type']!='combinedChart':
+            axisY.setRange(np.min(data[0]),np.max(data[0])) #blocking the vertical scale to avoid the regression series going over
 
         # series creation from data
         #turning the X and Y data into a Qseries for the chart
         series = QtCharts.QScatterSeries() 
-        for i in range(len(data[0])):
-            if not vertLin and data[0][i]<=0: #avoiding negative values in logarithmic scale
-                pass
-            else:
-                series.append(data[-1][i],data[0][i])
+
+        if values['Type'] =='combinedChart': 
+            pass
+        else:
+            for i in range(len(data[0])):
+                if not vertLin and data[0][i]<=0: #avoiding negative values in logarithmic scale
+                    pass
+                else:
+                    series.append(data[1][i],data[0][i])
         series.setMarkerSize(3)
 
         #chart setup
@@ -357,19 +407,6 @@ class MainWindow(QMainWindow):
         self.axisX = axisX
         self.axisY = axisY
 
-        #adding possible line series on top:
-        for j in range(1,len(data)-1):
-            moreSeries = QtCharts.QLineSeries()
-            moreSeries.setName(f'moreSeries{j}')
-            for i in range(len(data[j])):
-                if not vertLin and data[j][i]<=0:    #avoiding any negative value in the linear regressions
-                    pass
-                else :
-                    moreSeries.append(data[-1][i],data[j][i])
-            moreSeries.setColor(QColor("cyan"))
-            chart.addSeries(moreSeries)
-            moreSeries.attachAxis(axisX)
-            moreSeries.attachAxis(axisY)
 
         #widget setup
         self.ui.chart_view = QtCharts.QChartView(chart)
@@ -378,14 +415,71 @@ class MainWindow(QMainWindow):
         
         sizePolicy = QSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
         self.ui.chart_view.setSizePolicy(sizePolicy)
-
-        self.ui.verticalLayout_7.addWidget(self.ui.chart_view)
         self.ui.chart_view.setRubberBand(QtCharts.QChartView.HorizontalRubberBand) #allowing for zoom by default
+        self.timer = QTimer(self.ui.chart_view)  #adding a timer for the status update or it won't allow for zoom
+        self.timer.timeout.connect(self.statusUpdate)
+        self.timer.start(100)
+
+        n = len(data)
+        #creating a special case for combined charts:
+        if values['Type']=='combinedChart':
+            for j in range(int(n/2)):
+                moreSeries = QtCharts.QScatterSeries()
+                moreSeries.setName(f'moreSeries{j}')
+                max = np.max(data[2*j])
+                normalizedData = data[2*j]/max
+                for i in range(len(data[2*j])):
+                    moreSeries.append(data[2*j+1][i],normalizedData[i])
+                moreSeries.setColor(colors[j])
+                moreSeries.setMarkerSize(5)
+                moreSeries.setBorderColor(None)
+                chart.addSeries(moreSeries)
+                moreSeries.attachAxis(axisX)
+                moreSeries.attachAxis(axisY)
+            axisX.setRange(0,data[1][-1])
+        #adding possible line series on top in other case:
+        else:
+            for j in range(2,n):
+                moreSeries = QtCharts.QLineSeries()
+                moreSeries.setName(f'moreSeries{j}')
+                for i in range(len(data[j])): #linear regressions are added to the end
+                    if not vertLin and data[j][i]<=0:    #avoiding any negative value in the linear regressions
+                        pass
+                    else :
+                        moreSeries.append(data[1][i],data[j][i])
+                pen = QPen(colors[j-2])
+                pen.setWidth(2)
+                moreSeries.setPen(pen)
+                chart.addSeries(moreSeries)
+                moreSeries.attachAxis(axisX)
+                moreSeries.attachAxis(axisY)
+                #adding the equation on top
+                equation  = values['linRegEquations'][j-2]
+                moreSeries.setName(equation)
+                chart.legend().setVisible(True)
+        
+        #adding it on the ui
+        self.ui.verticalLayout_7.addWidget(self.ui.chart_view)
+
+        #making the current sheet button checked
+        buttonid = 0
+        for i in range(len(self.sheets)):
+            if self.sheets[i][0] ==id:
+                self.ui.horizontalLayout_4.itemAt(i).widget().setChecked(True)
+                break
+
         if self.currentSheetId!= id:
             if self.undoPile:
                 self.undoPile = [] #removing memorized actions on previous views
             if self.redoPile:
                 self.redoPile = []
+            #making the button of the old sheet unchecked:
+            buttonid = 0
+            for i in range(len(self.sheets)):
+                if self.sheets[i][0] ==self.currentSheetId:
+                    self.ui.horizontalLayout_4.itemAt(i).widget().setChecked(False)
+                    break
+
             self.currentSheetId = id #updating the current view id
 
     """
@@ -412,18 +506,20 @@ class MainWindow(QMainWindow):
     """
     adds a button in button list under the chart view to change view
     """    
-    def setupSheetButton(self,name,id,maxWid = 70,minHei = 35):
+    def setupSheetButton(self,name,id,Checked = True,maxWid = 70,minHei = 35):
         #adding button to button list
         buttonLabel=f"buttonSheet{id}"
         
-        self.buttons.append(buttonLabel)
         button = QPushButton(buttonLabel)
         button.setMaximumWidth(maxWid)
         button.setMinimumHeight(minHei)
         button.setObjectName(buttonLabel)
         button.setText(QCoreApplication.translate("MainWindow", name, None))
+        button.setCheckable(True)
+        button.setChecked(Checked)
         button.clicked.connect(lambda : self.showView(id))
         self.ui.horizontalLayout_4.addWidget(button)
+        self.buttons.append(name)
 
     """
     displays an error message if issue happens
@@ -442,7 +538,7 @@ class MainWindow(QMainWindow):
         data,values,title,units = self.lookForSheet(id)[:4]
         dict = {'title' : title,'units':{'bottomUnit':units[0],'leftUnit':units[1]},'values':values,
             'data':{'YaxisData':' '.join(str(data_point)for data_point in data[0]),
-                'XaxisData':' '.join(str(data_point) for data_point in data[-1])}}
+                'XaxisData':' '.join(str(data_point) for data_point in data[1])}}
         return(dict)
 
     """
@@ -456,14 +552,14 @@ class MainWindow(QMainWindow):
         if values['Type']!='baseSheet': #only useful for basesheets
             return
         if units[0] =='Angle Theta (°)':
-            data[-1] = 2*np.sin(data[-1]*np.pi/180)/values['Lambda']
+            data[1] = 2*np.sin(data[1]*np.pi/180)/values['Lambda']
             units[0] = 'Q'
         elif units[0] =='Q':
-            data[-1] = np.arcsin(values['Lambda']*data[-1]/2)*180/np.pi
+            data[1] = np.arcsin(values['Lambda']*data[1]/2)*180/np.pi
             units[0] = 'Angle Theta (°)'
         for sheet in self.sheets:
             if sheet[0] == self.currentSheetId:
-                sheet[1][-1] = data[-1]
+                sheet[1][1] = data[1]
                 sheet[4] = units
                 break
         self.showView(self.currentSheetId)
@@ -488,6 +584,22 @@ class MainWindow(QMainWindow):
                 if self.sheets[n-i-1][0]<self.currentSheetId:
                     self.showView(self.sheets[n-i-1][0])
                     break
+
+    """
+    tracks the mouse coordinates on the graph
+    """
+    def statusUpdate(self):
+        pos = self.mapFromGlobal(QCursor.pos())
+        point = self.ui.chart_view.chart().mapToValue(pos)
+        units = self.lookForSheet(self.currentSheetId)[3]
+        if self.ui.chart_view.chart().plotArea().contains(pos):
+            self.status_bar.showMessage(f"{units[0]}: {point.x()}, {units[1]}: {point.y()}")
+        else:
+            self.status_bar.clearMessage()
+        if self.timer!=NotImplemented:
+            self.timer.start(100) #checking the mouse position every 100 ms
+        
+
 
     ########################################################
     #methods for the "edit" menu
@@ -519,8 +631,9 @@ class MainWindow(QMainWindow):
         elif function == self.polyreg: #removing data of previously added linear regression
             for sheet in self.sheets:
                 if sheet[0] == self.currentSheetId:
-                    dataset  = sheet[1].pop(1)
-                    self.redoPile.append([function, dataset])
+                    dataset  = sheet[1].pop()
+                    equation = sheet[2]['linRegEquations'].pop()
+                    self.redoPile.append([function, [dataset,equation]])
                     self.showView(self.currentSheetId)
                     break
 
@@ -541,11 +654,11 @@ class MainWindow(QMainWindow):
         elif function == self.polyreg:
             for sheet in self.sheets:
                 if sheet[0] == self.currentSheetId:
-                    sheet[1].insert(1,variables)
+                    sheet[1].append(variables[0])
+                    sheet[2]['linRegEquations'].append(variables[1])
                     self.undoPile.append([self.polyreg,None]) #appending undoPile manually because the action function isnt called
                     self.showView(self.currentSheetId)
                     break
-
 
     """
     deletes a view and the button associated with it
@@ -567,7 +680,8 @@ class MainWindow(QMainWindow):
             self.showView(self.sheets[0][0])    #updating the view if there is another view to show
         else : 
             self.ui.verticalLayout_7.takeAt(0).widget().deleteLater() #deleting the current view if there are no others to show
-
+            self.timer = NotImplemented
+    
     """
     copies current view info (data/values)
     """
@@ -615,7 +729,7 @@ class MainWindow(QMainWindow):
             #reduce the dataset to the zoomed series
             for sheet in self.sheets:
                 if sheet[0] ==self.currentSheetId:
-                    for dataset in range(len(sheet[1])):
+                    for dataset in sheet[1]:
                         dataset = dataset[left_ind,right_ind]
                     break
 
@@ -699,14 +813,12 @@ class MainWindow(QMainWindow):
         for sheet in self.sheets:
             if sheet[0]==self.currentSheetId:
                 for i in range(len(sheet[1][0])):
-                    sheet[1][0][i] -= (intercept +slope*sheet[1][-1][i])
+                    sheet[1][0][i] -= (intercept +slope*sheet[1][1][i])
                 break
         if not undoing: 
             self.undoPile.append([self.update_plot_data,[slope,intercept]])
             if not redoing: self.redoPile = []
         self.showView(self.currentSheetId) #reset the chart after updating the data
-
-
 
     """
     reloads the view with the changed scales
@@ -741,7 +853,6 @@ class MainWindow(QMainWindow):
                 self.undoPile.append([self.scales,[vertLin,horLin]])
                 if not redoing: self.redoPile = []
 
-
     """
     adapts the scale for horizontal combo box
     """
@@ -760,7 +871,7 @@ class MainWindow(QMainWindow):
     def polyreg(self,k,undoing = False, redoing = False):
         data,values,_,_,vertLin,horLin = self.lookForSheet(self.currentSheetId)[:6]
         chart = self.ui.chart_view.chart()
-        if chart == NotImplemented:
+        if chart == NotImplemented or values['Type']=='combinedChart':
             return
         
         #getting the borders of the zoom indices
@@ -768,34 +879,64 @@ class MainWindow(QMainWindow):
         
         left_val = chart.mapToValue(plot_area.topLeft()).x()
         right_val = chart.mapToValue(plot_area.bottomRight()).x()
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
         
-        data_series = np.zeros(len(data[-1]))
+        data_series = np.zeros(len(data[1]))
+        equation = ''  #equation of the regression that will be stored to be shown and saved
 
         #getting the regression coefficients
         if vertLin: #adapting the regression with the scales of the graph
+            equation+='y ='
             if horLin: #both scales linear, standard regression
-                coefficients = np.polyfit(data[-1][left_ind:right_ind],data[0][left_ind:right_ind],deg = k)
+                coefficients = np.polyfit(data[1][left_ind:right_ind],data[0][left_ind:right_ind],deg = k)
                 for i in range(k+1):
-                    data_series+=coefficients[i]*np.power(data[-1],k-i) #coefficients are given in decreasing power order
+                    data_series+=coefficients[k-i]*np.power(data[1],i) #coefficients are given in decreasing power order
+                    if i ==0:
+                        equation += f'{coefficients[k-i]:.3e}'
+                    elif i ==1:
+                        equation +=f' + {coefficients[k-i]:.3e}*x'
+                    else:
+                        equation +=f' + {coefficients[k-i]:.3e}*x^{i}'
+
             else : #horizontal scale logarithmic (as in kmoments)
-                coefficients = np.polyfit(np.log(data[-1][left_ind:right_ind]),data[0][left_ind:right_ind],deg = k)
+                coefficients = np.polyfit(np.log(data[1][left_ind:right_ind]),data[0][left_ind:right_ind],deg = k)
                 for i in range(k+1):
-                    data_series+=coefficients[i]*np.power(np.log(data[-1]),k-i)
+                    data_series+=coefficients[k-i]*np.power(np.log(data[1]),i)
+                    if i ==0:
+                        equation += f'{coefficients[k-i]:.3e}'
+                    elif i ==1:
+                        equation +=f' + {coefficients[k-i]:.3e}*log(x)'
+                    else:
+                        equation +=f' + {coefficients[k-i]:.3e}*log(x)^{i}'
+
         else : #vertical logarithmic
+            equation+='log(y) ='
             if horLin: #horizontal linear
-                coefficients = np.polyfit(data[-1][left_ind:right_ind],(np.log10(data[0][left_ind:right_ind])),deg = k)
+                coefficients = np.polyfit(data[1][left_ind:right_ind],(np.log10(data[0][left_ind:right_ind])),deg = k)
                 for i in range(k+1):
-                    data_series+=(coefficients[i]*np.power(data[-1],k-i))
+                    data_series+=(coefficients[k-i]*np.power(data[1],i))
+                    if i ==0:
+                        equation += f'{coefficients[k-i]:.3e}'
+                    elif i ==1:
+                        equation +=f' + {coefficients[k-i]:.3e}*x'
+                    else:
+                        equation +=f' + {coefficients[k-i]:.3e}*x^{i}'
+
             else : #both logarithmic
-                coefficients = np.polyfit(np.log(data[-1][left_ind:right_ind]),(np.log10(data[0][left_ind:right_ind])),deg = k)
+                coefficients = np.polyfit(np.log(data[1][left_ind:right_ind]),(np.log10(data[0][left_ind:right_ind])),deg = k)
                 for i in range(k+1):
-                    data_series+=(coefficients[i]*np.power(np.log(data[-1]),k-i))
+                    data_series+=(coefficients[k-i]*np.power(np.log(data[1]),i))
+                    if i ==0:
+                        equation += f'{coefficients[k-i]:.3e}'
+                    elif i ==1:
+                        equation +=f' + {coefficients[k-i]:.3e}*log(x)'
+                    else:
+                        equation +=f' + {coefficients[k-i]:.3e}*log(x)^{i}'
             data_series = np.power(data_series, 10) #adjusting for vertical log scale
 
         #saving the last linear regression coefficients for data
-        values['linearRegressionCoeffs']={f'Order{i}Coeff':coefficients[k-i] for i in range(k+1)}
-        data.insert(1,data_series)
+        values['linRegEquations'].append(equation)
+        data.append(data_series)
         self.showView(self.currentSheetId)
         if not undoing :
             self.undoPile.append([self.polyreg,None])
@@ -834,15 +975,15 @@ class MainWindow(QMainWindow):
         
         left_val = chart.mapToValue(plot_area.topLeft()).x()
         right_val = chart.mapToValue(plot_area.bottomRight()).x()
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
 
 
         #computing q for zoomed intensity:
         if units[0] =='Q':
             Q0 = np.sin(values['Theta']*np.pi/180)*2/values['Lambda']
-            q_set = data[-1] - Q0
+            q_set = data[1] - Q0
         elif units[0] == 'Angle Theta (°)':
-            q_set = np.array((2/values['Lambda'])*(np.sin(data[-1]*np.pi/180)-np.sin(values['Theta']*np.pi/180)))
+            q_set = np.array((2/values['Lambda'])*(np.sin(data[1]*np.pi/180)-np.sin(values['Theta']*np.pi/180)))
         #computing the full integral I(s)dq
         integ = np.trapz(intensities[left_ind:right_ind],q_set[left_ind:right_ind])
 
@@ -937,7 +1078,7 @@ class MainWindow(QMainWindow):
         left_val =chart.mapToValue(plot_area.topLeft()).x()
         right_val = chart.mapToValue(plot_area.bottomRight()).x()
 
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[-1])
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
 
         #setting up the array for the np.fft.fft
         tempArray = np.zeros(right_ind-left_ind)
@@ -962,6 +1103,30 @@ class MainWindow(QMainWindow):
         self.kMoment(4,id)
         self.fourier(id)
 
+#########################################
+#### Dialog class to get user selection
+#########################################
+
+class SelectionDialog(QDialog):
+    def __init__(self, items):
+        super().__init__()
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.items = items
+        self.selected_items = []
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QListWidget.MultiSelection)
+        for item in self.items:
+            self.list_widget.addItem(item)
+        self.select_button = QPushButton("Select")
+        self.select_button.clicked.connect(self.select_items)
+        layout = QVBoxLayout()
+        layout.addWidget(self.list_widget)
+        layout.addWidget(self.select_button)
+        self.setLayout(layout)
+        
+    def select_items(self):
+        self.selected_items = [item.text() for item in self.list_widget.selectedItems()]
+        self.accept()
 
 if __name__=="__main__":
     app = QApplication(sys.argv)

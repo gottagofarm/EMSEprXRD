@@ -466,7 +466,7 @@
      <addaction name="actionPrintAllCharts"/>
     </widget>
     <addaction name="actionOpen"/>
-    <addaction name="actionOpen_Multiple"/>
+    <addaction name="actionCombineCharts"/>
     <addaction name="separator"/>
     <addaction name="menuSavePNG"/>
     <addaction name="menuSaveData"/>
@@ -547,9 +547,9 @@
     <string>Ctrl+O</string>
    </property>
   </action>
-  <action name="actionOpen_Multiple">
+  <action name="actionCombineCharts">
    <property name="text">
-    <string>Open Multiple</string>
+    <string>Combine Charts</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+O</string>
