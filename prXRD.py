@@ -65,16 +65,14 @@ class MainWindow(QMainWindow):
         self.initialZoom = NotImplemented #previous zoom before undoing (not used for now (too bad))
 
         self.ui.chart_view = NotImplemented #storing the chartview to access chart & plotarea for computing limits
-        self.axisX = None #keeping axis stored to add noise control line (not the case for regression lines that adapt when scale changes)
+        self.axisX = None #keeping axis stored to add noise filter line (not the case for regression lines that adapt when scale changes)
         self.axisY = None
 
-        self.noise_coords = [(0,0),(0,0)]
-        self.noise_series = None #allowing for noise control
+        self.blockShowView = False #blocking showView in need (actions to be applied before changing view)
+        self.noise_coords = [(0,0),(0,0)] #keeping track of the points defining the noise filter
 
-        self.ui.pushButtonVerticalReframe.setCheckable(True)  #setting different buttons to have toggle on mode
-        self.ui.pushButtonVerticalReframe.setChecked(False)
-        self.ui.pushButtonHorizontalReframe.setCheckable(True)
-        self.ui.pushButtonHorizontalReframe.setChecked(False)
+        self.ui.pushButtonNoiseFilter.setCheckable(True)  #setting different buttons to have toggle on mode
+        self.ui.pushButtonNoiseFilter.setChecked(False)
 
         self.status_bar = QStatusBar(self) #having a status bar to display the chart coords
         self.setStatusBar(self.status_bar)
@@ -89,10 +87,10 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonPlus.clicked.connect(self.openfiles)
         self.ui.actionCombineCharts.triggered.connect(self.combineCharts)
 
-        self.ui.actionSavePNG.triggered.connect(self.saveCurrentView)
-        self.ui.actionSaveAllPNG.triggered.connect(self.saveAllViews)
+        self.ui.actionSavePNG.triggered.connect(lambda : self.saveAllViews(True))
+        self.ui.actionSaveMultiplePNG.triggered.connect(self.saveAllViews)
         self.ui.actionSaveCurrentData.triggered.connect(self.saveCurrentSheet)
-        self.ui.actionSaveAllData.triggered.connect(self.saveAllSheets)
+        self.ui.actionSaveSelectedData.triggered.connect(self.saveAllSheets)
 
         self.ui.actionPrintChart.triggered.connect(self.printCurrent)
         self.ui.actionExit.triggered.connect(app.quit)
@@ -105,12 +103,22 @@ class MainWindow(QMainWindow):
         self.ui.actionCopy.triggered.connect(self.copyView)
         self.ui.actionPaste.triggered.connect(self.pasteView)
         self.ui.actionCut.triggered.connect(self.cutView)
+        self.ui.actionResetZoom.triggered.connect(self.resetZoom)
         self.ui.actionUndo.triggered.connect(self.undoAction)
         self.ui.actionRedo.triggered.connect(self.redoAction)
 
         #preprocessing menu actions
-        self.ui.pushButtonHorizontalReframe.clicked.connect(self.horizontalReframe) #setting up the horizontal reframe button
-        self.ui.pushButtonVerticalReframe.clicked.connect(self.noiseControl)
+        self.ui.pushButtonReduceDataset.clicked.connect(self.reduceDataset) #setting up the horizontal reframe button
+        self.ui.pushButtonNoiseFilter.clicked.connect(self.noiseFilter)
+        #special noiseFilter UI buttons setup
+        self.ui.pushButtonLeftMin.clicked.connect(lambda : self.ui.textEditLeftVal.setText(str(float(self.ui.textEditLeftVal.toPlainText())-1)))
+        self.ui.pushButtonLeftPlus.clicked.connect(lambda : self.ui.textEditLeftVal.setText(str(float(self.ui.textEditLeftVal.toPlainText())+1)))
+        self.ui.pushButtonRightMin.clicked.connect(lambda : self.ui.textEditRightVal.setText(str(float(self.ui.textEditRightVal.toPlainText())-1)))
+        self.ui.pushButtonRightPlus.clicked.connect(lambda : self.ui.textEditRightVal.setText(str(float(self.ui.textEditRightVal.toPlainText())+1)))
+        self.ui.textEditLeftVal.textChanged.connect(self.updateNoiseLine)
+        self.ui.textEditRightVal.textChanged.connect(self.updateNoiseLine)
+        #hiding the buttons for now
+        self.toggleVisibility(self.ui.frameGrid,False)
 
         self.ui.actionHorizontalLinear.triggered.connect(lambda : self.scales(None,True)) 
         self.ui.actionHorizontalLogarithmic.triggered.connect(lambda : self.scales(None,False))
@@ -128,11 +136,11 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonUnitToggle.clicked.connect(self.toggleUnit)
 
         #operations menu actions
-        self.ui.actionM1.triggered.connect(lambda : self.kMoment(1,self.currentSheetId))
-        self.ui.actionM2.triggered.connect(lambda : self.kMoment(2,self.currentSheetId))
-        self.ui.actionM3.triggered.connect(lambda : self.kMoment(3,self.currentSheetId))
-        self.ui.actionM4_q.triggered.connect(lambda : self.kMoment(4,self.currentSheetId))
-        self.ui.actionFourier.triggered.connect(lambda : self.fourier(self.currentSheetId))
+        self.ui.actionM1.triggered.connect(lambda : self.kMoment(1,self.currentSheetId,show = False))
+        self.ui.actionM2.triggered.connect(lambda : self.kMoment(2,self.currentSheetId,show = False))
+        self.ui.actionM3.triggered.connect(lambda : self.kMoment(3,self.currentSheetId,show = False))
+        self.ui.actionM4_q.triggered.connect(lambda : self.kMoment(4,self.currentSheetId,show = False))
+        self.ui.actionFourier.triggered.connect(lambda : self.fourier(self.currentSheetId,show = False))
         self.ui.actionAll.triggered.connect(self.all)
 
 
@@ -145,20 +153,26 @@ class MainWindow(QMainWindow):
     """
     def openfiles(self):
         #browsing for the file
-        fname, filter = QFileDialog.getOpenFileName(None, 'Open file', path, 'xrdml files(*.xrdml)')
+        #setting up a filter for the correct type of files
+        filter = 'xrdml files(*.xrdml *.xml)'
+        fname, filter= QFileDialog.getOpenFileName(None, 'Open file', path, filter)
         
         fpath = ''
         for x in fname:
             fpath += x
         try : file = open(fpath)
         except FileNotFoundError:
-            print("Please enter a valid file (.xrdml)")
+            self.displayError("Please enter a valid file (.xml created using this program or .xrdml)")
         #getting the values from the file
-        data,values = self.parseXrdml(file.name)
-        title = f'Chart {self.id}'
-        units = ['Angle Theta (°)','log Intensity']
-        #setting up the chart view
-        self.setupNewChart(data,values,title,units,None,True,False,True)
+        if fpath[-4:] == 'rdml':
+            data,values = self.parseXrdml(file.name)
+            title = f'Chart {self.id}'
+            units = ['Angle Theta (°)','log Intensity']
+            #setting up the chart view
+            self.setupNewChart(data,values,title,units,None,True,False,True)
+        #same for .xml files
+        elif fpath[-4:] == '.xml':
+            self.parseXml(file.name)
 
     """
     combines multiple sheets into same chart
@@ -217,10 +231,24 @@ class MainWindow(QMainWindow):
     """
     saves all sheets as pngs
     """
-    def saveAllViews(self):
-        for sheet in self.sheets:
-            self.showView(sheet[0],False)
+    def saveAllViews(self, bugfix = False):
+        #special case for only one saved item (because it would create false files????)
+        if bugfix:
             self.saveCurrentView()
+            return
+        #creating the dialog to allow for selection of charts
+        self.selection_dialog = SelectionDialog(self.buttons)
+        self.selection_dialog.setWindowTitle("Select charts to save")
+        result = self.selection_dialog.exec_() #executing dialog
+        if result == QDialog.Accepted:
+            #getting the selected buttons
+            selected_items = self.selection_dialog.selected_items
+            for i in range(len(self.sheets)):
+                if self.buttons[i] in selected_items:
+                    self.showView(self.sheets[i][0],False)
+                    self.saveCurrentView()
+            #adding the animations back on
+            self.ui.chart_view.chart().setAnimationOptions(QtCharts.QChart.SeriesAnimations)
 
     """
     saves current sheet data
@@ -231,9 +259,10 @@ class MainWindow(QMainWindow):
             return
         dict = self.sheetToDict(self.currentSheetId)
         day = date.today()
-        finalName = savePath +str(day)+'_'+dict['title']+'.xml'
-        finalDict = {f'{finalName}':dict} #adding dict layer for xmltodict single root
-        xml_data = xmltodict.unparse(finalDict)
+        title = dict['title'].replace(' ','').replace(',','_')
+        finalName = savePath +str(day)+'_'+title+'.xml'
+        finalDict = {f'xrdml':dict} #adding dict layer for xmltodict single root
+        xml_data = xmltodict.unparse(finalDict,pretty= True)
         with open(finalName,'w') as f:
             f.write((xml_data))
 
@@ -241,15 +270,23 @@ class MainWindow(QMainWindow):
     saves all sheets in a single xml file
     """
     def saveAllSheets(self):
-        if not self.sheets:
-            return
-        dict ={f'{i}':self.sheetToDict(self.sheets[i][0]) for i in range(len(self.sheets))}
-        day = date.today()
-        finalName = savePath+str(day)+'_'+dict['1']['values']['baseFile'][-14:-6] +'xml'
-        finalDict = {f'{finalName}':dict}
-        xml_data = xmltodict.unparse(finalDict)
-        with open(finalName,'w') as f:
-            f.write((xml_data))
+        #creating the dialog to allow for selection of charts
+        self.selection_dialog = SelectionDialog(self.buttons)
+        self.selection_dialog.setWindowTitle("Select data to save")
+        result = self.selection_dialog.exec_() #executing dialog
+        if result == QDialog.Accepted:
+            #getting the selected buttons
+            selected_items = self.selection_dialog.selected_items
+            dict = {}
+            for i in range(len(self.sheets)):
+                if self.buttons[i] in selected_items:
+                    dict[f'sheet{i}'] =self.sheetToDict(self.sheets[i][0])
+            day = date.today()
+            finalName = savePath+str(day)+'_'+dict['sheet0']['values']['baseFile'][-14:-6].replace(' ','').replace(',','_') +'.xml'
+            finalDict = {f'allData':dict}
+            xml_data = xmltodict.unparse(finalDict,pretty = True)
+            with open(finalName,'w') as f:
+                f.write((xml_data))
 
     """
     prints current view
@@ -269,6 +306,37 @@ class MainWindow(QMainWindow):
         # Finish up and cleanup
         painter.end()
 
+    """
+    allows to scroll through windows using left and right arrow keys
+    """
+    def scroll(self,right):
+        if self.ui.chart_view == NotImplemented:
+            return
+        if right: #slide one to the right
+            for sheet in self.sheets:
+                if sheet[0]>self.currentSheetId:
+                    self.showView(sheet[0])
+                    break
+        else: #slide one to the left (start counting ids from the right)
+            n = len(self.sheets)
+            for i in range(n):
+                if self.sheets[n-i-1][0]<self.currentSheetId:
+                    self.showView(self.sheets[n-i-1][0])
+                    break
+
+    """
+    tracks the mouse coordinates on the graph
+    """
+    def statusUpdate(self):
+        pos = self.mapFromGlobal(QCursor.pos())
+        point = self.ui.chart_view.chart().mapToValue(pos)
+        units = self.lookForSheet(self.currentSheetId)[3]
+        if self.ui.chart_view.chart().plotArea().contains(pos):
+            self.status_bar.showMessage(f"{units[0]}: {point.x()}, {units[1]}: {point.y()}")
+        else:
+            self.status_bar.clearMessage()
+        if self.timer!=NotImplemented:
+            self.timer.start(100) #checking the mouse position every 100 ms
 
     ########################################################
     #useful methods
@@ -279,7 +347,7 @@ class MainWindow(QMainWindow):
     """
     def parseXrdml(self,file):
         #dummy values 
-        values = {'Theta':0,'Lambda':0,'SD':0,'time':0,'linRegEquations':[],'baseFile':file}
+        values = {'Theta':0,'Lambda':0,'SD':0,'Time':0,'linRegEquations':[],'baseFile':file}
         parsedfile = xmltodict.parse(open(file).read(),xml_attribs = False)
         
         #associating the values with the chart       
@@ -298,6 +366,42 @@ class MainWindow(QMainWindow):
         return (data,values)
 
     """
+    parses .xml files that are given by the saveCurrentSheet method
+    """
+    def parseXml(self,file):
+        parsedfile = xmltodict.parse(open(file).read(),xml_attribs = False)
+        if list(parsedfile.keys())[0]=='allData': #checking if the .xml file is for many sheets 
+            for sheet in parsedfile['allData'].values():
+                #recreating the sheets stored in the data
+                values = {}
+                for key,value in sheet['values'].items():
+                    try : values[key] = float(value)
+                    except (ValueError,TypeError): values[key] = value
+                values['linRegEquations'] = []
+                title = sheet['title']
+                units = [sheet['units']['bottomUnit'],sheet['units']['leftUnit']]
+                leftValues = sheet['data']['YaxisData'].split(' ')
+                bottomValues = sheet['data']['XaxisData'].split(' ')
+                data = [np.array(list(map(float,leftValues))),np.array(list(map(float,bottomValues)))]
+                self.setupNewChart(data,values,title,units,None,True,True,True)
+        elif list(parsedfile.keys())[0] == 'xrdml': #checking if the .xml file is for only one sheet
+            #recreating the sheet (data, values, title, units)
+            sheet = parsedfile['xrdml']
+            values = {}
+            for key,value in sheet['values'].items():
+                try : values[key] = float(value)
+                except (ValueError,TypeError): values[key] = value
+            values['linRegEquations'] = []
+            title = sheet['title']
+            units = [sheet['units']['bottomUnit'],sheet['units']['leftUnit']]
+            leftValues = sheet['data']['YaxisData'].split(' ')
+            bottomValues = sheet['data']['XaxisData'].split(' ')
+            data = [np.array(list(map(float,leftValues))),np.array(list(map(float,bottomValues)))]
+            self.setupNewChart(data,values,title,units,None,True,True,True)
+        else:
+            self.displayError('Please use .xml files created using this program.')
+
+    """
     sets up a new chart
     """
     def setupNewChart(self,data,values = "None",title = "Title",units=["Angle (°)","Intensity"],
@@ -305,6 +409,9 @@ class MainWindow(QMainWindow):
         id = self.id
         #creating new chart in list
         self.sheets.append([id,data,values,title,units,vertLin,horLin])
+        #creating an undo and redo pile associated to that sheet
+        self.undoPile.append([])
+        self.redoPile.append([])
         #setting up the button to change the chart viewed
         if buttonName is None:
             self.setupSheetButton(f"Sheet {id}",id,Checked= show)
@@ -318,9 +425,17 @@ class MainWindow(QMainWindow):
         self.id+=1 #incrementing chart id
 
     """
-    shows the view corresponding to set of data and values
+    shows the view corresponding to set of data and values linked with id
     """
     def showView(self,id,animations = True):
+        #checking wether this is available
+        if self.blockShowView:
+            for i in range(len(self.sheets)):
+                if self.sheets[i][0] == self.currentSheetId:
+                    self.ui.horizontalLayout_4.itemAt(i).widget().setChecked(True)
+                break
+            return
+
         try : self.ui.verticalLayout_7.takeAt(0).widget().deleteLater() #deleting the current view if there is one
         except AttributeError:
             pass
@@ -376,6 +491,7 @@ class MainWindow(QMainWindow):
         # series creation from data
         #turning the X and Y data into a Qseries for the chart
         series = QtCharts.QScatterSeries() 
+        series.setName('mainSeries')
 
         if values['Type'] =='combinedChart': 
             pass
@@ -386,7 +502,6 @@ class MainWindow(QMainWindow):
                 else:
                     series.append(data[1][i],data[0][i])
         series.setMarkerSize(3)
-
         #chart setup
         chart = QtCharts.QChart()
 
@@ -402,11 +517,6 @@ class MainWindow(QMainWindow):
         chart.addSeries(series)
         series.attachAxis(axisX)
         series.attachAxis(axisY)
-
-        #storing the axis to allow for dynamic noise control series adding
-        self.axisX = axisX
-        self.axisY = axisY
-
 
         #widget setup
         self.ui.chart_view = QtCharts.QChartView(chart)
@@ -431,8 +541,8 @@ class MainWindow(QMainWindow):
                 for i in range(len(data[2*j])):
                     moreSeries.append(data[2*j+1][i],normalizedData[i])
                 moreSeries.setColor(colors[j])
-                moreSeries.setMarkerSize(5)
-                moreSeries.setBorderColor(None)
+                moreSeries.setMarkerSize(3)
+                moreSeries.setBorderColor(colors[j])
                 chart.addSeries(moreSeries)
                 moreSeries.attachAxis(axisX)
                 moreSeries.attachAxis(axisY)
@@ -462,21 +572,15 @@ class MainWindow(QMainWindow):
         self.ui.verticalLayout_7.addWidget(self.ui.chart_view)
 
         #making the current sheet button checked
-        buttonid = 0
         for i in range(len(self.sheets)):
-            if self.sheets[i][0] ==id:
+            if self.sheets[i][0] == id:
                 self.ui.horizontalLayout_4.itemAt(i).widget().setChecked(True)
                 break
 
         if self.currentSheetId!= id:
-            if self.undoPile:
-                self.undoPile = [] #removing memorized actions on previous views
-            if self.redoPile:
-                self.redoPile = []
             #making the button of the old sheet unchecked:
-            buttonid = 0
             for i in range(len(self.sheets)):
-                if self.sheets[i][0] ==self.currentSheetId:
+                if self.sheets[i][0] == self.currentSheetId:
                     self.ui.horizontalLayout_4.itemAt(i).widget().setChecked(False)
                     break
 
@@ -526,10 +630,27 @@ class MainWindow(QMainWindow):
     """
     def displayError(self, message):
         error_dialog = QMessageBox(self)
-        error_dialog.setIcon(QMessageBox.Critical)
+        error_dialog.setIcon(QMessageBox.Warning)
         error_dialog.setWindowTitle("Error")
         error_dialog.setText(message)
         error_dialog.exec_()
+
+    """
+    displays information msgs
+    """
+    def displayTip(self,message):
+        tip_dialog = QMessageBox(self)
+        tip_dialog.setIcon(QMessageBox.Information)
+        tip_dialog.setText(message)
+        #removing buttons, and border
+        tip_dialog.setStandardButtons(QMessageBox.NoButton)
+        tip_dialog.setWindowFlags(tip_dialog.windowFlags() | Qt.FramelessWindowHint)
+        #setting the message centered top
+        parent_rect = self.geometry()
+        tip_dialog.move(parent_rect.center().x()-200,parent_rect.top())
+        tipTimer = QTimer
+        tipTimer.singleShot(1000,tip_dialog.accept)
+        tip_dialog.show()
 
     """
     transforms the sheet list into a dictionary for xmltodict.unparse
@@ -542,63 +663,35 @@ class MainWindow(QMainWindow):
         return(dict)
 
     """
-    changes the unit from theta to q and viceversa if it is possible
+    updates the bragg angle (theta0)
     """
-    def toggleUnit(self, undoing = False, redoing = False):
-        try : data,values,title,units = self.lookForSheet(self.currentSheetId)[:4]
+    def updateTheta(self, update = True, id = None):
+        if id is None: id = self.currentSheetId #default update on current sheet
+        try : data,values,_,units = self.lookForSheet(id)[:4]
         except TypeError:
             self.displayError("Error : no chart corresponding to ID found")
             return
-        if values['Type']!='baseSheet': #only useful for basesheets
+        if values['Type'] != 'baseSheet': #only useful on basesheets
             return
-        if units[0] =='Angle Theta (°)':
-            data[1] = 2*np.sin(data[1]*np.pi/180)/values['Lambda']
-            units[0] = 'Q'
-        elif units[0] =='Q':
-            data[1] = np.arcsin(values['Lambda']*data[1]/2)*180/np.pi
-            units[0] = 'Angle Theta (°)'
-        for sheet in self.sheets:
-            if sheet[0] == self.currentSheetId:
-                sheet[1][1] = data[1]
-                sheet[4] = units
-                break
-        self.showView(self.currentSheetId)
-        if not undoing: 
-            self.undoPile.append([self.toggleUnit,None]) #updating undo pile if not undoing
-            if not redoing: self.redoPile = [] #if new action, should clear redo pile 
 
-    """
-    allows to scroll through windows using left and right arrow keys
-    """
-    def scroll(self,right):
-        if self.ui.chart_view == NotImplemented:
-            return
-        if right: #slide one to the right
-            for sheet in self.sheets:
-                if sheet[0]>self.currentSheetId:
-                    self.showView(sheet[0])
-                    break
-        else: #slide one to the left (start counting ids from the left)
-            n = len(self.sheets)
-            for i in range(n):
-                if self.sheets[n-i-1][0]<self.currentSheetId:
-                    self.showView(self.sheets[n-i-1][0])
-                    break
-
-    """
-    tracks the mouse coordinates on the graph
-    """
-    def statusUpdate(self):
-        pos = self.mapFromGlobal(QCursor.pos())
-        point = self.ui.chart_view.chart().mapToValue(pos)
-        units = self.lookForSheet(self.currentSheetId)[3]
-        if self.ui.chart_view.chart().plotArea().contains(pos):
-            self.status_bar.showMessage(f"{units[0]}: {point.x()}, {units[1]}: {point.y()}")
+        #adapting the theta computation to the bottom unit:
+        if units[0] =='Q' or units[0] == 'log Q':
+            bottomArray = (np.arcsin(values['Lambda']*data[1]/2)*180/np.pi)
         else:
-            self.status_bar.clearMessage()
-        if self.timer!=NotImplemented:
-            self.timer.start(100) #checking the mouse position every 100 ms
-        
+            bottomArray = data[1]
+        leftArray = data[0]
+
+        values['Theta'] = np.sum(bottomArray*leftArray)/np.sum(leftArray)
+        if update: #allowing for internal updates without visual changes if necessary
+            self.ui.Theta.setText('Theta [°] : '+str(values['Theta']))
+
+    """
+    toggles the visibility of all the children of a certain frame or widget container
+    """
+    def toggleVisibility(self, frame = QWidget, visible = False):
+        frame.setVisible(visible)
+        for child in frame.findChildren(QWidget):
+            self.toggleVisibility(child,visible)
 
 
     ########################################################
@@ -606,22 +699,33 @@ class MainWindow(QMainWindow):
     ########################################################
 
     """
+    resets the zoom
+    """
+    def resetZoom(self):
+        self.ui.chart_view.chart().zoomReset()
+        self.updateTheta()
+
+    """
     resets the zoom and undoes last memorized action
     """
     def undoAction(self):
-        self.ui.chart_view.chart().zoomReset()
-        if self.undoPile:
-            function,variables = self.undoPile.pop()
+        if self.undoPile[self.currentSheetId]:
+            function,variables = self.undoPile[self.currentSheetId].pop()
         else:
             return
         if function == self.toggleUnit: #this needs to be part of the undoPile as it changes the behaviour of other actions
             function(True,False)  #false to not append the undoPile while undoing
-            self.redoPile.append([function, variables])
-        elif function == self.update_plot_data: #to remove the noise correction, add an opposite noise correction
-            self.redoPile.append([function, variables])
+            self.redoPile[self.currentSheetId].append([function, variables])
+        elif function == self.noiseUpdateData: #to remove the noise correction, add an opposite noise correction
+            id = int(self.lookForSheet(self.currentSheetId)[2].split(' ')[-1]) #tracking the id of the sheet on which filter applies
+            for sheet in self.sheets: #updating the redoPile of each changed sheet
+                if int(sheet[3].split(' ')[-1]) == id:
+                    self.redoPile[sheet[0]].append([function, variables])
+                    if sheet[0] != self.currentSheetId: #removing it from the linked undoPiles
+                        self.undoPile[sheet[0]].pop()
             function(-variables[0],-variables[1],True,False)
         elif function == self.scales: #adjusting the variables to change the corresponding scale
-            self.redoPile.append([function, variables])
+            self.redoPile[self.currentSheetId].append([function, variables])
             vertLin,horLin = None,None
             if variables[0] != None:
                 vertLin = not variables[0]
@@ -631,9 +735,18 @@ class MainWindow(QMainWindow):
         elif function == self.polyreg: #removing data of previously added linear regression
             for sheet in self.sheets:
                 if sheet[0] == self.currentSheetId:
-                    dataset  = sheet[1].pop()
-                    equation = sheet[2]['linRegEquations'].pop()
-                    self.redoPile.append([function, [dataset,equation]])
+                    if sheet[2]['linRegEquations']!=[]: #this list can be emptied by noise filter
+                        dataset  = sheet[1].pop()
+                        equation = sheet[2]['linRegEquations'].pop()
+                        self.redoPile[self.currentSheetId].append([function, [dataset,equation]])
+                        self.showView(self.currentSheetId)
+                        break
+        elif function == self.reduceDataset: #putting the old data back 
+            for sheet in self.sheets:
+                if sheet[0] == self.currentSheetId:
+                    data = sheet[1].copy()
+                    sheet[1] = variables
+                    self.redoPile[self.currentSheetId].append([function,data])
                     self.showView(self.currentSheetId)
                     break
 
@@ -641,13 +754,17 @@ class MainWindow(QMainWindow):
     redoes last memorized action
     """
     def redoAction(self):
-        if self.redoPile:
-            function,variables = self.redoPile.pop()
+        if self.redoPile[self.currentSheetId]:
+            function,variables = self.redoPile[self.currentSheetId].pop()
         else:
             return
         if function == self.toggleUnit: #this needs to be part of the undoPile as it changes the behaviour of other actions
             function(False, True)
-        elif function == self.update_plot_data: #to remove the noise correction, add an opposite noise correction
+        elif function == self.noiseUpdateData: #to remove the noise correction, add an opposite noise correction
+            id = int(self.lookForSheet(self.currentSheetId)[2].split(' ')[-1]) #tracking the id of the sheet on which filter applies
+            for sheet in self.sheets:#updating other redoPiles aswell
+                if int(sheet[3].split(' ')[-1]) == id and sheet[0]!=self.currentSheetId:
+                    self.redoPile[sheet[0]].pop()
             function(variables[0],variables[1],False,True)
         elif function == self.scales: #adjusting the variables to change the corresponding scale
             function(variables[0],variables[1],False,True)
@@ -656,7 +773,15 @@ class MainWindow(QMainWindow):
                 if sheet[0] == self.currentSheetId:
                     sheet[1].append(variables[0])
                     sheet[2]['linRegEquations'].append(variables[1])
-                    self.undoPile.append([self.polyreg,None]) #appending undoPile manually because the action function isnt called
+                    self.undoPile[self.currentSheetId].append([self.polyreg,None]) #appending undoPile manually because the action function isnt called
+                    self.showView(self.currentSheetId)
+                    break
+        elif function == self.reduceDataset:
+            for sheet in self.sheets:
+                if sheet[0] == self.currentSheetId:
+                    data = sheet[1].copy()
+                    sheet[1] = variables
+                    self.undoPile[self.currentSheetId].append([self.reduceDataset,data]) #appending undoPile manually because the action function isnt called
                     self.showView(self.currentSheetId)
                     break
 
@@ -674,6 +799,8 @@ class MainWindow(QMainWindow):
                 break
         self.sheets.pop(position)  #deleting the sheet from the sheet list
         self.buttons.pop(position)     #deleting the button from the button list
+        self.undoPile[position] = [] #clearing the undopile to keep the id position the same
+        self.redoPile[position] = [] #same for redoPile
         self.ui.horizontalLayout_4.takeAt(position).widget().deleteLater() #deleting the button widget
 
         if self.sheets!= []:
@@ -681,7 +808,7 @@ class MainWindow(QMainWindow):
         else : 
             self.ui.verticalLayout_7.takeAt(0).widget().deleteLater() #deleting the current view if there are no others to show
             self.timer = NotImplemented
-    
+
     """
     copies current view info (data/values)
     """
@@ -703,122 +830,195 @@ class MainWindow(QMainWindow):
         self.copyView()
         self.removeView(self.currentSheetId)
 
+
     ########################################################
     #methods for the "preprocessing" menu
     ########################################################
 
     """
-    allows for a horizontal zoom in (toggles the ability to zoom) and locks the zoom on the chart (not undoable yet)
+    locks the current value of the dataset
     """
-    def horizontalReframe(self):
-        if self.ui.pushButtonHorizontalReframe.isChecked():
-            # Disable zooming
-            self.ui.chart_view.setRubberBand(QtCharts.QChartView.NoRubberBand)
-            self.ui.pushButtonHorizontalReframe.setText('Enable Zoom')
-
-            #lock the zoom by changing the data in case the sheet is reloaded
-            chart = self.ui.chart_view.chart()
-            plot_area = chart.plotArea()
-
-            # Map the plot area to data coordinates, and getting the indices in the data to know the zoom
-            left_val = chart.mapToValue(plot_area.topLeft()).x()
-            right_val = chart.mapToValue(plot_area.bottomRight()).x()
-            data = self.lookForSheet(self.currentSheetId)[0]
-
-            left_ind,right_ind = self.subSeries(left_val,right_val,data)
-            #reduce the dataset to the zoomed series
-            for sheet in self.sheets:
-                if sheet[0] ==self.currentSheetId:
-                    for dataset in sheet[1]:
-                        dataset = dataset[left_ind,right_ind]
-                    break
-
-
-        else:
-            # Enable zooming
-            self.ui.chart_view.setRubberBand(QtCharts.QChartView.HorizontalRubberBand)
-            self.ui.pushButtonHorizontalReframe.setText('Disable Zoom')
+    def reduceDataset(self,show = True, undoing = False, redoing = False):
+        #current sheet data & values
+        data,values = self.lookForSheet(self.currentSheetId)[:2]
+        if values['Type'] == 'combinedChart':
+            self.displayTip('Not available for combined charts')
+            return
+        #getting the current borders of the plot area
+        chart = self.ui.chart_view.chart()
+        plot_area = chart.plotArea()
+        # Map the plot area to data coordinates, and getting the indices in the data to know the zoom
+        left_val = chart.mapToValue(plot_area.topLeft()).x()
+        right_val = chart.mapToValue(plot_area.bottomRight()).x()
+        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
+        #updating the undoPile before reducing the data
+        if not undoing: 
+            self.undoPile[self.currentSheetId].append([self.reduceDataset,data.copy()])
+            if not redoing: self.redoPile[self.currentSheetId] = []
+        #reduce the dataset to the zoomed series
+        for i in range(len(data)):
+            data[i] = data[i][left_ind:right_ind]
+        self.updateTheta()
+        if show:
+            self.showView(self.currentSheetId) 
 
     """
-    allows for a selection of a noise control line through 2 points on a graph
+    allows for noise filter line toggling and for button control on that line
     """
-    def noiseControl(self):
-        if self.ui.pushButtonVerticalReframe.isChecked():
-            # Enable selection of two points
-            self.ui.pushButtonVerticalReframe.setText('Apply Filter')            
-            self.ui.chart_view.setCursor(Qt.CrossCursor)
-            self.ui.chart_view.mousePressEvent = self.select_first_point
-        else:
-            # Remove the line series and reset the cursor
-            self.ui.chart_view.setCursor(Qt.ArrowCursor)
-            if self.noise_series == None:
-                self.displayError('Please enter at least two points on the graph.')
+    def noiseFilter(self):
+        if self.ui.pushButtonNoiseFilter.text() == 'Noise Filter':
+            values,title = self.lookForSheet(self.currentSheetId)[1:3]
+            if values['Type']== 'combinedChart':
+                self.displayTip('Noise Filter only applies to base or moment charts')
                 return
+            self.blockShowView = True #block showView
+            #updating text
+            self.ui.pushButtonNoiseFilter.setText('Apply filter')
+            #setting the base values of the noise line extremities
+            #looking for the id of the base sheet linked to current sheet
+            id = int(title.split(' ')[-1]) #id of is at the end of the title
+            data = self.lookForSheet(id)[0] #getting the data of the baseSheet to apply the noise on
+            self.noise_coords = [[np.min(data[1]),np.min(data[0])],[np.max(data[1]),np.min(data[0])]]
+
+            #setting up the ui for the filter buttons
+            self.ui.pushButtonReduceDataset.setVisible(False)
+            self.toggleVisibility(self.ui.frameGrid,True)
+        else:
+            #removing the filter buttons from the ui and restoring the other layout
+            self.ui.pushButtonReduceDataset.setVisible(True)
+            self.toggleVisibility(self.ui.frameGrid,False)  
+
+            #updating the data
             (x1, y1), (x2, y2) = self.noise_coords[0],self.noise_coords[1]
-            # calculate slope and intercept of linear function
             slope = (y2 - y1) / (x2 - x1)
             intercept = y1 - slope * x1
-            self.update_plot_data(slope,intercept)  # reset plot data   
-            self.noise_series = None
-            self.ui.pushButtonVerticalReframe.setText('Noise Control')
+            if slope == intercept == 0: #avoiding useless computing if no noise line is needed
+                self.ui.pushButtonNoiseFilter.setText('Noise Filter')
+                self.noise_coords = []
+                return
+            
+            self.noiseUpdateData(slope,intercept) #updating the data of all sheets linked to the one changed
 
-    def select_first_point(self,event : QMouseEvent):
-        # Get the x and y coordinates of the first point
-        chart = self.ui.chart_view.chart()
-        x = chart.mapToValue(event.pos()).x()
-        y = chart.mapToValue(event.pos()).y()
-        self.noise_coords[0] = (x,y)
-        self.ui.chart_view.mousePressEvent = self.select_second_point
+            self.ui.pushButtonNoiseFilter.setText('Noise Filter')
+            self.ui.pushButtonNoiseFilter.setChecked(False)
+            self.noise_coords = []
+            self.resetTextEdit()
+            self.blockShowView = False #allowing sheet changes again
 
-    def select_second_point(self,event: QMouseEvent):
-        #getting second point coords
-        chart = self.ui.chart_view.chart()
-        x = chart.mapToValue(event.pos()).x()
-        y = chart.mapToValue(event.pos()).y()
-        self.noise_coords[1] = (x,y)
-        #adding a series to the chart for visual reference
-        if self.noise_series != None:
-            chart.removeSeries(self.noise_series) #removing series if not first line
-        self.noise_series = QtCharts.QLineSeries()
-        self.noise_series.append(self.noise_coords[0][0],self.noise_coords[0][1])
-        self.noise_series.append(self.noise_coords[1][0],self.noise_coords[1][1])
-        chart.addSeries(self.noise_series)
-        self.noise_series.attachAxis(self.axisX)
-        self.noise_series.attachAxis(self.axisY)
-        self.ui.chart_view.mousePressEvent = self.select_third_point
-
-    def select_third_point (self,event : QMouseEvent):
-        #in case of failed first attempt, we can retry
-        chart = self.ui.chart_view.chart()
-        x = chart.mapToValue(event.pos()).x()
-        y = chart.mapToValue(event.pos()).y()
-        self.noise_coords[0] = (x,y)
-        #adding a series to the chart for visual reference
-        chart.removeSeries(self.noise_series) #removing previous series
-        self.noise_series = QtCharts.QLineSeries()
-        self.noise_series.append(self.noise_coords[0][0],self.noise_coords[0][1])
-        self.noise_series.append(self.noise_coords[1][0],self.noise_coords[1][1])
-
-        chart.addSeries(self.noise_series)
-        self.noise_series.attachAxis(self.axisX)
-        self.noise_series.attachAxis(self.axisY)
-        #giving the hand back to the 2nd point choice
-        self.ui.chart_view.mousePressEvent = self.select_second_point
-
-    """
-    updates plot data according to slope and intercept defining noise line (substracts it)
-    """
-    def update_plot_data(self,slope,intercept, undoing = False, redoing = False):
-        # subtract linear function from data
+    def noiseUpdateData(self,slope,intercept,undoing = False,redoing = False):
+        id = self.currentSheetId #tracking the id of the base sheet
+        #checking the id of the base sheet
         for sheet in self.sheets:
-            if sheet[0]==self.currentSheetId:
-                for i in range(len(sheet[1][0])):
-                    sheet[1][0][i] -= (intercept +slope*sheet[1][1][i])
+            if sheet[0]==id:
+                if sheet[2]['Type']!='baseSheet':
+                    id = int(sheet[3].split(' ')[-1]) #last part of the title is the id of the baseSheet
                 break
+        for sheet in self.sheets:
+            #updating the base sheet
+            if sheet[0]==id: 
+                for i in range(len(sheet[1][0])):
+                    sheet[1][0][i]-=(intercept +slope*sheet[1][1][i])
+                self.updateTheta(True,id) 
+                theta = sheet[2]['Theta']
+                unit = sheet[4][0]
+                intensities = sheet[1][0]
+                angles = sheet[1][1]
+            #updating the values of the charts in link with the base chart
+            elif int(sheet[3].split(' ')[-1]) == id and sheet[2]['Type']=='momentChart':
+                k = int(sheet[3].split(' ')[0][1:]) #first part of title contains the order of the moment of the chart
+                data_series,q_spread = self.momentData(intensities,angles,k,unit,theta,sheet[2]['Lambda'])
+                sheet[1] = [data_series,q_spread] #updating the data of the moment chart
+                sheet[2]['linRegEquations']=[] #resetting the linear regression equations because the noise has been changed
+                sheet[2]['Theta']=theta
+            elif int(sheet[3].split(' ')[-1]) == id and sheet[2]['Type']=='fourierChart':
+                fftArray,fftFreq = self.fourierData(intensities)
+                sheet[1] = [fftArray,fftFreq] #updating the data of the fourier transform
+                sheet[2]['linRegEquations']=[] #resetting the linear regression equations because the noise has been changed
+                sheet[2]['Theta']=theta
+        #updating the undoPiles
         if not undoing: 
-            self.undoPile.append([self.update_plot_data,[slope,intercept]])
-            if not redoing: self.redoPile = []
-        self.showView(self.currentSheetId) #reset the chart after updating the data
+            for sheet in self.sheets: #updating each undoPile in relation with the noise filter
+                if int(sheet[3].split(' ')[-1]) == id:
+                    self.undoPile[sheet[0]].append([self.noiseUpdateData,[slope,intercept]])
+                    if not redoing: self.redoPile[sheet[0]] = []
+        self.showView(self.currentSheetId)
+
+    """
+    updates the noise filter line and the plot according to the new noise
+    """
+    def updateNoiseLine(self):
+        sheetType = self.lookForSheet(self.currentSheetId)[1]['Type']
+
+        self.noise_coords[0][1],self.noise_coords[1][1] = float(self.ui.textEditLeftVal.toPlainText()),float(self.ui.textEditRightVal.toPlainText())
+        (x1, y1), (x2, y2) = self.noise_coords[0],self.noise_coords[1]
+        # calculate slope and intercept of linear function
+        slope = (y2 - y1) / (x2 - x1)
+        intercept = y1 - slope * x1
+        #case for basesheets (easy to update)
+        if sheetType == 'baseSheet':
+            newSeries =  []
+            for sheet in self.sheets:
+                if sheet[0]==self.currentSheetId:
+                    for i in range(len(sheet[1][0])):
+                        if sheet[1][0][i]-(intercept +slope*sheet[1][1][i])>0: #avoiding log scale conflict
+                            newSeries.append(QPointF(sheet[1][1][i],sheet[1][0][i]-(intercept +slope*sheet[1][1][i])))
+                    break
+            self.updatePlotSeries(newSeries)
+        #case for other sheets : have to recalculate everything
+        elif sheetType == 'momentChart' : 
+            #getting the id of the baseSheet linked to the sheet
+            for sheet in self.sheets:
+                if sheet[0]==self.currentSheetId:
+                    id = int(sheet[3].split(' ')[-1]) #last part of the title is the id of the baseSheet
+                    k = int(sheet[3].split(' ')[0][1:]) #first part contains the order of the moment
+            data,values,_,units = self.lookForSheet(id)[:4]
+            #updating intensity without changing the data yet:
+            intensities = data[0].copy()
+            angles = data[1].copy()
+            for i in range(len(intensities)):
+                intensities[i] -= (intercept+slope*angles[i])
+            #updating a momentary theta
+            if units[0] =='Q' or units[0] == 'log Q':
+                bottomArray = (np.arcsin(values['Lambda']*angles/2)*180/np.pi)
+                theta = np.sum(bottomArray*intensities)/np.sum(intensities)
+            else: theta = np.sum(angles*intensities)/np.sum(intensities)
+            #getting the new moment data
+            data_series,q_spread = self.momentData(intensities,angles,k,units[0],theta,values['Lambda'])
+            #creating new series
+            newSeries = []
+            for i in range(len(data_series)):
+                if data_series[i]>0: #avoiding conflict of negative values in logarithmic scale
+                    newSeries.append(QPointF(q_spread[i],data_series[i]))
+            self.updatePlotSeries(newSeries)
+        elif sheetType == 'fourierChart':
+            for sheet in self.sheets:
+                if sheet[0]==self.currentSheetId:
+                    id = int(sheet[3].split(' ')[-1]) #last part of the title is the id of the baseSheet
+            intensities = self.lookForSheet(id)[0][0]
+            fftArray,fftFreq = self.fourierData(intensities)
+            #creating new series
+            newSeries = []
+            for i in range(len(fftArray)):
+                if fftArray[i]>0: #avoiding conflict of negative values in logarithmic scale
+                    newSeries.append(QPointF(fftFreq[i],fftArray[i]))
+            self.updatePlotSeries(newSeries)
+
+    def updatePlotSeries(self,newSeries,oldSeries = QtCharts.QScatterSeries):
+        chart = self.ui.chart_view.chart()
+        for series in chart.series():
+            if isinstance(series,oldSeries):
+                series.replace(QPolygonF(newSeries))
+
+    """
+    resets the text edits to 0 to avoid having base values from the last noise filter
+    """
+    def resetTextEdit(self):
+        self.ui.textEditLeftVal.textChanged.disconnect(self.updateNoiseLine)
+        self.ui.textEditRightVal.textChanged.disconnect(self.updateNoiseLine)
+        self.ui.textEditLeftVal.setText('0')
+        self.ui.textEditRightVal.setText('0')
+        self.ui.textEditLeftVal.textChanged.connect(self.updateNoiseLine)
+        self.ui.textEditRightVal.textChanged.connect(self.updateNoiseLine)
 
     """
     reloads the view with the changed scales
@@ -850,8 +1050,8 @@ class MainWindow(QMainWindow):
         if horLin != None or vertLin != None: #avoiding meaningless updates
             self.showView(self.currentSheetId)
             if not undoing : 
-                self.undoPile.append([self.scales,[vertLin,horLin]])
-                if not redoing: self.redoPile = []
+                self.undoPile[self.currentSheetId].append([self.scales,[vertLin,horLin]])
+                if not redoing: self.redoPile[self.currentSheetId] = []
 
     """
     adapts the scale for horizontal combo box
@@ -871,7 +1071,10 @@ class MainWindow(QMainWindow):
     def polyreg(self,k,undoing = False, redoing = False):
         data,values,_,_,vertLin,horLin = self.lookForSheet(self.currentSheetId)[:6]
         chart = self.ui.chart_view.chart()
-        if chart == NotImplemented or values['Type']=='combinedChart':
+        if chart == NotImplemented:
+            return
+        if values['Type']=='combinedChart':
+            self.displayTip('Not available on combined charts')
             return
         
         #getting the borders of the zoom indices
@@ -939,8 +1142,42 @@ class MainWindow(QMainWindow):
         data.append(data_series)
         self.showView(self.currentSheetId)
         if not undoing :
-            self.undoPile.append([self.polyreg,None])
-            if not redoing: self.redoPile = []
+            self.undoPile[self.currentSheetId].append([self.polyreg,None])
+            if not redoing: self.redoPile[self.currentSheetId] = []
+
+    """
+    changes the unit from theta to q and viceversa if it is possible
+    """
+    def toggleUnit(self, undoing = False, redoing = False):
+        try : data,values,_,units,_,horlin = self.lookForSheet(self.currentSheetId)[:6]
+        except TypeError:
+            self.displayError("Error : no chart corresponding to ID found")
+            return
+        if values['Type']!='baseSheet': #only useful for basesheets
+            self.displayTip('Only useful for base data sheets')
+            return
+        if units[0] =='Angle Theta (°)' or units[0]=='log Angle Theta (°)':
+            data[1] = 2*np.sin(data[1]*np.pi/180)/values['Lambda']
+            if horlin:
+                units[0] = 'Q'
+            else:
+                units[0] = 'log Q'
+        elif units[0] =='Q' or units[0] == 'log Q':
+            data[1] = np.arcsin(values['Lambda']*data[1]/2)*180/np.pi
+            if horlin:
+                units[0] = 'Angle Theta (°)'
+            else:
+                units[0] = 'log Angle Theta (°)'
+        for sheet in self.sheets:
+            if sheet[0] == self.currentSheetId:
+                sheet[1][1] = data[1]
+                sheet[4] = units
+                break
+        self.showView(self.currentSheetId,animations = False)
+        self.ui.chart_view.chart().setAnimationOptions(QtCharts.QChart.SeriesAnimations)
+        if not undoing: 
+            self.undoPile[self.currentSheetId].append([self.toggleUnit,None]) #updating undo pile if not undoing
+            if not redoing: self.redoPile[self.currentSheetId] = [] #if new action, should clear redo pile 
 
     ########################################################
     #methods for the "Operations" menu
@@ -949,46 +1186,52 @@ class MainWindow(QMainWindow):
     """
     computes the k'th order restricted moment of a selected data series
     """
-    def kMoment (self,k,id):
-        try : data,values,title,units = self.lookForSheet(id)[:4]
-        except TypeError:
-            self.displayError("Error : no chart corresponding to ID found")
-            return
+    def kMoment (self,k,id,show = False, addToUndo = True):
+        #locking the values of the current zoom
+        if id == self.currentSheetId : self.reduceDataset(show = show,undoing = not addToUndo) #theta update + dataset reduction set to be undoable by default
+        data,values,title,units = self.lookForSheet(id)[:4]
+
         if values['Type'] != 'baseSheet':
-            self.displayError('Only use Operation tools on base sheets (extracted from a .xrdml file)')
+            self.displayTip('Only use Operation tools on base sheets (extracted from a .xrdml file)')
             return
         
-        intensities = data[0]
-
         #adjusting the type of the chart (here to prevent the same operation to be tried on a modified chart)
         new_values = values.copy()
         new_values['Type']='momentChart'
+        new_values['linRegEquations'] = [] #linear regression
         #adjusting units (no longer measurement number)
         new_units = ['','']
         new_units[0]= 'log q'
         new_units[1] = 'Computed Intensity'
 
+        #computing moments:        
+        data_series,q_spread = self.momentData(data[0],data[1],k,units[0],new_values['Theta'],new_values['Lambda'])
 
-        # Map the plot area to data coordinates, and getting the indices in the data to know the zoom
-        chart = self.ui.chart_view.chart()
-        plot_area = chart.plotArea()
-        
-        left_val = chart.mapToValue(plot_area.topLeft()).x()
-        right_val = chart.mapToValue(plot_area.bottomRight()).x()
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
+        #setting up the new sheets
+        if k == 4: #special case for M4, because we divide by q^2
+            new_units[0] = 'q'
+            self.setupNewChart([data_series,q_spread],new_values,
+                'M'+str(k)+' chart of '+title,new_units,'M4/q² '+str(id),show,True,True)
+        else:
+            #setting up new chart with the series in mind
+            self.setupNewChart([data_series,q_spread],new_values,
+                'M'+str(k)+' chart of '+title,new_units,'M'+str(k)+' '+str(id),show,True,False)
 
-
-        #computing q for zoomed intensity:
-        if units[0] =='Q':
-            Q0 = np.sin(values['Theta']*np.pi/180)*2/values['Lambda']
-            q_set = data[1] - Q0
-        elif units[0] == 'Angle Theta (°)':
-            q_set = np.array((2/values['Lambda'])*(np.sin(data[1]*np.pi/180)-np.sin(values['Theta']*np.pi/180)))
+    """
+    compute the dataseries to be shown for the moment charts
+    """
+    def momentData(self,intensities,angles,k,unit,theta,lamb):
+        #adapting bottom unit
+        if unit =='Q' or unit == 'log Q':
+            Q0 = np.sin(theta*np.pi/180)*2/lamb
+            q_set = angles - Q0
+        elif unit == 'Angle Theta (°)' or unit =='log Angle Theta (°)':
+            q_set = np.array((2/lamb)*(np.sin(angles*np.pi/180)-np.sin(theta*np.pi/180)))
         #computing the full integral I(s)dq
-        integ = np.trapz(intensities[left_ind:right_ind],q_set[left_ind:right_ind])
+        integ = np.trapz(intensities,q_set)
 
         #creating a linearly spread out q dataset 
-        q_spread = np.linspace(0,np.max(q_set[left_ind:right_ind]),momentPoints)
+        q_spread = np.linspace(0,min(np.max(q_set),-np.min(q_set)),momentPoints) #avoiding going out of bounds on the max
         q_spread = q_spread[1:] #avoiding the zero to not cause logarithm scale issues
         data_series = [] #dataset to append that will contain the moment integral on given q in q_spread
         
@@ -999,12 +1242,12 @@ class MainWindow(QMainWindow):
         left, right = self.subSeries(0,0,q_set) #getting the first indices over q=0 as a starting point (we move to both sides from the middle)
         for q in q_spread:
             #we integrate on the right side up until we interpolate the last point
-            while q_set[right+1] <q:
+            while right+1 < len(q_set) and q_set[right+1] <q:
                 #adding the trapezoid to the right times the average q value to the power k
                 curIntSum += ((intensities[right+1]*(q_set[right+1]**k)+intensities[right]*(q_set[right]**k))*abs(q_set[right+1]-q_set[right])/2)
                 right +=1
             #then on the left side up until we have to interpolate
-            while q_set[left-1]>-q:
+            while left> 0 and q_set[left-1]>-q:
                 curIntSum += ((intensities[left-1]*(q_set[left-1]**k)+intensities[left]*(q_set[left]**k))*abs(q_set[left-1]-q_set[left])/2) #trapezoid to the right
                 left -=1
             
@@ -1026,16 +1269,10 @@ class MainWindow(QMainWindow):
                         + ((intensQLeft*((-q)**k)+intensities[left]*(q_set[left]**k))*abs(-q-q_set[left])/2))
         data_series = data_series/integ #adjusting to the full integral
 
-        #setting up the new sheets
-        if k == 4: #special case for M4, because we divide by q^2
+        if k == 4: #special case for k == 4
             for i in range(len(data_series)):
                 data_series[i]= data_series[i] / q_spread[i]**2 #adjusting for  q^2
-            self.setupNewChart([data_series,q_spread],new_values,
-                'M'+str(k)+' chart of '+title,new_units,'M4/q² '+str(id),False,True,False)
-        else:
-            #setting up new chart with the series in mind
-            self.setupNewChart([data_series,q_spread],new_values,
-                'M'+str(k)+' chart of '+title,new_units,'M'+str(k)+' '+str(id),False,True,False)
+        return(data_series,q_spread)
 
     """
     takes boundaries of a growing series and returns the subseries indices corresponding to the subseries in the boundaries
@@ -1052,15 +1289,16 @@ class MainWindow(QMainWindow):
     """
     computes the fast fourier transform of selected data series
     """
-    def fourier(self,id):
-        #the setup is similar to the kmoments, the details + showing the displayerror and ending the function is  useful so its let as is
+    def fourier(self,id,show = False, addToUndo = True):
+        #locking the values of the current zoom
+        if id == self.currentSheetId : self.reduceDataset(show = show,undoing = not addToUndo) #this also updates theta
 
         try :data,values,title = self.lookForSheet(id)[:3]
         except TypeError:
             self.displayError("Error : no chart corresponding to ID found")
             return
         if values['Type'] != 'baseSheet':
-            self.displayError('Only use Operation tools on base sheets (extracted from a .xrdml file)')
+            self.displayTip('Only use Operation tools on base sheets (extracted from a .xrdml file)')
             return
 
         #adjusting the type of the chart (here to prevent the same operation to be tried on a modified chart)
@@ -1071,37 +1309,30 @@ class MainWindow(QMainWindow):
         new_units[0]= 'Freq'
         new_units[1]='FFT/amplitude'
 
-        chart = self.ui.chart_view.chart()
-        plot_area = chart.plotArea()
-
-        # Map the plot area to data coordinates, and getting the indices in the data to know the zoom
-        left_val =chart.mapToValue(plot_area.topLeft()).x()
-        right_val = chart.mapToValue(plot_area.bottomRight()).x()
-
-        left_ind,right_ind = self.subSeries(left_val,right_val,data[1])
-
-        #setting up the array for the np.fft.fft
-        tempArray = np.zeros(right_ind-left_ind)
-        for i in range (len(tempArray)):
-            tempArray[i]=data[0][i+left_ind]  #storing the intensities in a np.array for the fft
-        fftArray = np.abs(np.fft.fft(tempArray)) #taking the magnitude
-        fftFreq = np.fft.fftfreq(len(fftArray))
-
-        fftArray = fftArray[1:int(len(tempArray)/2)]/fftArray[0] # Exclude sampling frequency & normalize
-        fftFreq = fftFreq[1:len(tempArray)]
+        #computing fft
+        fftArray,fftFreq = (self.fourierData(data[0]))
 
         self.setupNewChart([fftArray,fftFreq],new_values,'Fourier transform of '+title,
             new_units,'Fourier '+str(id),False,True,False)
+
+    def fourierData(self,intensities):
+        fftArray = np.abs(np.fft.fft(intensities)) #taking the magnitude
+        fftFreq = np.fft.fftfreq(len(fftArray))
+
+        fftArray = fftArray[1:int(len(intensities)/2)]/fftArray[0] # Exclude sampling frequency & normalize
+        fftFreq = fftFreq[1:len(intensities)] #removing 0 to avoid log scale conflict
+        return(fftArray,fftFreq)
 
     """
     launches all operations on given base sheet
     """
     def all(self):
         id = self.currentSheetId
-        self.kMoment(2,id)
-        self.kMoment(3,id)
-        self.kMoment(4,id)
-        self.fourier(id)
+        self.kMoment(2,id,False,True) #only adding one data reduction to the undo pile
+        self.kMoment(3,id,False,False)
+        self.kMoment(4,id,False,False)
+        self.fourier(id,False,False)
+
 
 #########################################
 #### Dialog class to get user selection
